@@ -1,5 +1,6 @@
 import type { Route } from '../routes'
 import { dashboardPage } from './dashboard/page'
+import { downloadPage, setupDownload } from './download/page'
 import { librariesPage, setupLibraries } from './libraries/page'
 import { settingsPage, setupSettings } from './settings/page'
 
@@ -13,6 +14,13 @@ export function renderPage(route: Route): PageView {
     return {
       markup: librariesPage(),
       setup: setupLibraries,
+    }
+  }
+
+  if (route === 'downloads') {
+    return {
+      markup: downloadPage(),
+      setup: setupDownload,
     }
   }
 

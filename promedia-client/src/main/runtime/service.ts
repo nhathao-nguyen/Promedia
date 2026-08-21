@@ -21,7 +21,7 @@ import type {
   RuntimeInstallProgress,
   RuntimeStatus,
 } from '../../shared/runtime.ts'
-import { ArchiveError, extractRuntimeExecutables } from './archive.ts'
+import { ArchiveError, extractRuntimeExecutables, stageSingleRuntimeExecutable } from './archive.ts'
 import {
   fetchAllowed,
   findRuntime,
@@ -133,12 +133,9 @@ export class RuntimeService {
       if (artifactHash !== source.sha256) throw new RuntimeInstallError('checksum-mismatch')
 
       report({ phase: 'extracting' })
-      const relativeExecutablePaths = await extractRuntimeExecutables(
-        archivePath,
-        stagingDirectory,
-        source.executables,
-        signal,
-      )
+      const relativeExecutablePaths = source.archive === 'file'
+        ? await stageSingleRuntimeExecutable(archivePath, stagingDirectory, source.executables)
+        : await extractRuntimeExecutables(archivePath, stagingDirectory, source.executables, signal)
       throwIfCancelled(signal)
 
       report({ phase: 'installing' })
@@ -234,6 +231,23 @@ export class RuntimeService {
 
   private runtimeDirectory(runtimeId: string): string {
     return join(this.rootDirectory, runtimeId)
+  }
+
+  async resolveExecutable(
+    runtimeId: string,
+    logicalName: string,
+    signal: AbortSignal,
+  ): Promise<string> {
+    const entry = findRuntime(runtimeId)
+    if (!entry) throw new RuntimeInstallError('runtime-not-found')
+    const local = await inspectLocalInstall(this.runtimeDirectory(runtimeId), entry, signal)
+    if (local.state !== 'ready' || !local.marker) throw new RuntimeInstallError('runtime-not-ready')
+
+    const installed = local.marker.executables[logicalName]
+    if (!entry.platforms[platformKey()]?.executables[logicalName] || !installed) {
+      throw new RuntimeInstallError('executable-missing')
+    }
+    return safeInstalledPath(this.runtimeDirectory(runtimeId), local.marker.installationDirectory, installed.path)
   }
 }
 
@@ -532,7 +546,9 @@ function installDirectoryName(source: ResolvedRuntimeSource): string {
 }
 
 function archiveExtension(archive: ResolvedRuntimeSource['archive']): string {
-  return archive === 'zip' ? '.zip' : '.tar.xz'
+  if (archive === 'zip') return '.zip'
+  if (archive === 'tar.xz') return '.tar.xz'
+  return '.bin'
 }
 
 function platformKey(): string {

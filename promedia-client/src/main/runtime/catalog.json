@@ -2,6 +2,57 @@
   "schemaVersion": 1,
   "runtimes": [
     {
+      "id": "yt-dlp",
+      "metadata": {
+        "featureName": {
+          "vi": "Công cụ tải video",
+          "en": "Video download engine"
+        },
+        "description": {
+          "vi": "yt-dlp dùng để phân tích và tải video từ Facebook, TikTok, Douyin và YouTube trên thiết bị.",
+          "en": "yt-dlp analyzes and downloads videos from Facebook, TikTok, Douyin, and YouTube on this device."
+        },
+        "privacy": {
+          "vi": "Liên kết và phiên đăng nhập chỉ được dùng trên thiết bị để thực hiện lượt tải; Promedia không tải media gốc lên máy chủ.",
+          "en": "Links and login sessions are used on this device for the download; Promedia does not upload the source media to a server."
+        },
+        "componentNames": ["yt-dlp"],
+        "processingLocation": "device",
+        "license": {
+          "name": "Unlicense / third-party notices",
+          "url": "https://github.com/yt-dlp/yt-dlp/blob/master/LICENSE"
+        }
+      },
+      "source": {
+        "apiURL": "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
+        "checksumAssetName": "SHA2-256SUMS",
+        "allowedHosts": [
+          "api.github.com",
+          "github.com",
+          "objects.githubusercontent.com",
+          "release-assets.githubusercontent.com"
+        ]
+      },
+      "platforms": {
+        "win32-x64": {
+          "archive": "file",
+          "assetPattern": "^yt-dlp\\.exe$",
+          "versionGroup": "release",
+          "executables": {
+            "yt-dlp": { "fileName": "yt-dlp.exe", "probeArgs": ["--version"], "probePattern": "^\\d{4}\\.\\d{2}\\.\\d{2}" }
+          }
+        },
+        "linux-x64": {
+          "archive": "file",
+          "assetPattern": "^yt-dlp_linux$",
+          "versionGroup": "release",
+          "executables": {
+            "yt-dlp": { "fileName": "yt-dlp_linux", "probeArgs": ["--version"], "probePattern": "^\\d{4}\\.\\d{2}\\.\\d{2}" }
+          }
+        }
+      }
+    },
+    {
       "id": "media-processing",
       "metadata": {
         "featureName": {
@@ -72,6 +123,49 @@
           "executables": {
             "ffmpeg": { "fileName": "ffmpeg", "probeArgs": ["-version"], "probePattern": "^ffmpeg version " },
             "ffprobe": { "fileName": "ffprobe", "probeArgs": ["-version"], "probePattern": "^ffprobe version " }
+          }
+        }
+      }
+    },
+    {
+      "id": "douyin-engine",
+      "metadata": {
+        "featureName": {
+          "vi": "Công cụ tải Douyin",
+          "en": "Douyin download engine"
+        },
+        "description": {
+          "vi": "Engine riêng để đọc kênh Douyin, tải video không watermark và xử lý lượt tải theo số lượng.",
+          "en": "A dedicated engine for reading Douyin channels, downloading no-watermark videos, and applying batch limits."
+        },
+        "privacy": {
+          "vi": "Liên kết, phiên Douyin và file tải được xử lý trên thiết bị; Promedia không tải media gốc lên máy chủ.",
+          "en": "Links, the Douyin session, and downloaded files are processed on this device; Promedia does not upload source media to a server."
+        },
+        "componentNames": ["Douyin engine"],
+        "processingLocation": "device",
+        "license": {
+          "name": "MIT",
+          "url": "https://github.com/jiji262/douyin-downloader/blob/main/LICENSE"
+        }
+      },
+      "source": {
+        "apiURL": "https://api.github.com/repos/nhathaofn/releases/releases/tags/assets-v1",
+        "checksumFromAssetDigest": true,
+        "allowedHosts": [
+          "api.github.com",
+          "github.com",
+          "objects.githubusercontent.com",
+          "release-assets.githubusercontent.com"
+        ]
+      },
+      "platforms": {
+        "win32-x64": {
+          "archive": "file",
+          "assetPattern": "^dy-engine\\.exe$",
+          "versionGroup": "release",
+          "executables": {
+            "douyin-engine": { "fileName": "dy-engine.exe", "probeArgs": ["--help"], "probePattern": "Douyin|douyin|Usage|usage|help" }
           }
         }
       }

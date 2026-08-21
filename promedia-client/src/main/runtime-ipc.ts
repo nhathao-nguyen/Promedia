@@ -17,8 +17,7 @@ interface ActiveInstall {
   controller: AbortController
 }
 
-export function registerRuntimeIPC(runtimeRoot: string): () => void {
-  const service = new RuntimeService(runtimeRoot)
+export function registerRuntimeIPC(service: RuntimeService): () => void {
   const activeInstalls = new Map<string, ActiveInstall>()
   const runtimeLocks = new Map<string, string>()
 

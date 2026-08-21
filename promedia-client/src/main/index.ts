@@ -4,6 +4,9 @@ import { pathToFileURL } from 'node:url'
 
 import { registerServerHealthIPC } from './server-health-ipc'
 import { registerRuntimeIPC } from './runtime-ipc'
+import { registerDialogIPC } from './dialog-ipc.ts'
+import { registerDownloadIPC } from './download/ipc.ts'
+import { RuntimeService } from './runtime/service.ts'
 
 function createWindow(): void {
   const rendererFile = join(__dirname, '../renderer/index.html')
@@ -44,9 +47,14 @@ function windowIconPath(): string {
 }
 
 app.whenReady().then(() => {
+  const runtimeService = new RuntimeService(join(app.getPath('userData'), 'runtimes'))
   const disposeServerHealthIPC = registerServerHealthIPC()
-  const disposeRuntimeIPC = registerRuntimeIPC(join(app.getPath('userData'), 'runtimes'))
+  const disposeRuntimeIPC = registerRuntimeIPC(runtimeService)
+  const disposeDownloadIPC = registerDownloadIPC(runtimeService, app.getPath('userData'))
+  const disposeDialogIPC = registerDialogIPC()
   app.once('before-quit', () => {
+    disposeDialogIPC()
+    disposeDownloadIPC()
     disposeRuntimeIPC()
     disposeServerHealthIPC()
   })

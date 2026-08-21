@@ -2,7 +2,7 @@ import { primaryRoutes, routeDetails, type Route } from '../routes'
 import { t } from '../i18n'
 import logoUrl from '../assets/branding/promedia-logo.png'
 
-type SidebarIcon = 'dashboard' | 'libraries' | 'settings'
+type SidebarIcon = 'dashboard' | 'downloads' | 'libraries' | 'settings'
 
 export function sidebar(activeRoute: Route): string {
   return `
@@ -38,6 +38,7 @@ function navigationLink(route: Route, activeRoute: Route, icon: SidebarIcon): st
 function sidebarIcon(name: SidebarIcon): string {
   const paths: Record<SidebarIcon, string> = {
     dashboard: '<rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />',
+    downloads: '<path d="M12 3v11" /><path d="m7 10 5 5 5-5" /><path d="M4 20h16" />',
     libraries: '<path d="M4 7.5 12 3l8 4.5-8 4.5-8-4.5Z" /><path d="m4 12 8 4.5 8-4.5" /><path d="m4 16.5 8 4.5 8-4.5" />',
     settings: '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" /><path d="M19.4 15a2 2 0 0 0 .4 2.2l.1.1-2.1 2.1-.1-.1a2 2 0 0 0-2.2-.4 2 2 0 0 0-1.2 1.8v.3h-3v-.3a2 2 0 0 0-1.2-1.8 2 2 0 0 0-2.2.4l-.1.1-2.1-2.1.1-.1a2 2 0 0 0 .4-2.2 2 2 0 0 0-1.8-1.2H4v-3h.3a2 2 0 0 0 1.8-1.2 2 2 0 0 0-.4-2.2l-.1-.1 2.1-2.1.1.1a2 2 0 0 0 2.2.4A2 2 0 0 0 11.2 4v-.3h3V4a2 2 0 0 0 1.2 1.8 2 2 0 0 0 2.2-.4l.1-.1 2.1 2.1-.1.1a2 2 0 0 0-.4 2.2 2 2 0 0 0 1.8 1.2h.3v3h-.3a2 2 0 0 0-1.7 1.1Z" />',
   }

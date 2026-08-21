@@ -4,7 +4,7 @@ import { test } from 'node:test'
 
 import { requestServerHealth } from '../src/main/server-health.ts'
 import { validateArchiveEntries } from '../src/main/runtime/archive.ts'
-import { parseChecksum, selectReleaseArtifact } from '../src/main/runtime/catalog.ts'
+import { parseAssetDigest, parseChecksum, selectReleaseArtifact } from '../src/main/runtime/catalog.ts'
 import {
   runtimeInstallFailureCode,
   RuntimeInstallError,
@@ -18,6 +18,10 @@ import {
   isRuntimeInstallRequest,
   isRuntimeStatusRequest,
 } from '../src/shared/runtime.ts'
+import { detectDownloadPlatform, isSupportedDownloadURL } from '../src/main/download/sites.ts'
+import { parseCandidates, parseProbeCollections } from '../src/main/download/engine.ts'
+import { parseDouyinAweme, probeDouyinURL } from '../src/main/download/douyin-api.ts'
+import { isDownloadProbeRequest, isDownloadRequest, isDownloadThumbnailRequest } from '../src/shared/download.ts'
 
 class MemoryStorage {
   #values = new Map()
@@ -83,11 +87,29 @@ test('runtime catalog selects the newest matching stable artifact dynamically', 
   })
 })
 
+test('runtime catalog can bind a single-file tool to the release tag', () => {
+  const asset = { name: 'yt-dlp.exe', size: 100, browser_download_url: 'https://github.com/yt-dlp.exe' }
+  const checksum = { name: 'SHA2-256SUMS', size: 50, browser_download_url: 'https://github.com/SHA2-256SUMS' }
+  assert.deepEqual(selectReleaseArtifact(
+    [checksum, asset],
+    '^yt-dlp\\.exe$',
+    'release',
+    undefined,
+    '2026.08.19',
+  ), { asset, version: '2026.08.19' })
+})
+
 test('runtime checksum parsing requires an exact artifact name', () => {
   const digest = 'a'.repeat(64)
   const document = `${digest}  ffmpeg-n10.0-latest-win64-lgpl-10.0.zip\n`
   assert.equal(parseChecksum(document, 'ffmpeg-n10.0-latest-win64-lgpl-10.0.zip'), digest)
   assert.equal(parseChecksum(document, 'ffmpeg-n10.0-latest-win64-lgpl-10.0.zip.exe'), null)
+})
+
+test('runtime catalog accepts a verified GitHub asset digest', () => {
+  const digest = 'b'.repeat(64)
+  assert.equal(parseAssetDigest(`sha256:${digest}`), digest)
+  assert.equal(parseAssetDigest(`sha512:${digest}`), null)
 })
 
 test('runtime archive validation rejects traversal and absolute paths', () => {
@@ -110,6 +132,141 @@ test('runtime failures are reduced to safe actionable renderer codes', () => {
   assert.equal(runtimeInstallFailureCode(Object.assign(new Error('disk'), { code: 'ENOSPC' })), 'insufficient-space')
   assert.equal(runtimeInstallFailureCode(new DOMException('timeout', 'TimeoutError')), 'network')
   assert.equal(runtimeInstallFailureCode(new Error('sensitive raw message')), 'unknown')
+})
+
+test('download platform routing accepts only the four requested hosts', () => {
+  assert.equal(detectDownloadPlatform('https://www.youtube.com/watch?v=abc'), 'youtube')
+  assert.equal(detectDownloadPlatform('https://www.tiktok.com/@user/video/1'), 'tiktok')
+  assert.equal(detectDownloadPlatform('https://www.facebook.com/reel/1'), 'facebook')
+  assert.equal(detectDownloadPlatform('https://www.douyin.com/video/1'), 'douyin')
+  assert.equal(detectDownloadPlatform('https://notfacebook.com/video/1'), null)
+  assert.equal(isSupportedDownloadURL('https://youtu.be/abc'), true)
+  assert.equal(isSupportedDownloadURL('file:///tmp/video.mp4'), false)
+})
+
+test('download probe accepts an explicit cookie choice without widening the request', () => {
+  assert.equal(isDownloadProbeRequest({ url: 'https://www.douyin.com/user/abc', useCookies: true }), true)
+  assert.equal(isDownloadProbeRequest({ url: 'https://www.douyin.com/user/abc', useCookies: false }), true)
+  assert.equal(isDownloadProbeRequest({ url: 'https://www.douyin.com/user/abc', useCookies: 'yes' }), false)
+  assert.equal(isDownloadThumbnailRequest({
+    thumbnailURL: 'https://i.ytimg.com/vi/abc12345/hqdefault.jpg',
+    sourceURL: 'https://www.youtube.com/watch?v=abc12345',
+    useCookies: false,
+  }), true)
+  assert.equal(isDownloadThumbnailRequest({ thumbnailURL: 'file:///secret', sourceURL: 'https://www.youtube.com/watch?v=abc12345' }), true)
+})
+
+test('Douyin channel parsing returns only video posts with thumbnail metadata', () => {
+  const candidate = parseDouyinAweme({
+    aweme_id: '7667077061483985256',
+    desc: 'A cat video',
+    author: { nickname: 'Creator' },
+    video: {
+      duration: 10_000,
+      height: 1920,
+      fps: 30,
+      play_addr: { url_list: ['https://example.com/video.mp4'] },
+      cover: { url_list: ['https://example.com/cover.jpg'] },
+    },
+  }, 'Creator')
+  assert.equal(candidate?.id, '7667077061483985256')
+  assert.equal(candidate?.title, 'A cat video')
+  assert.equal(candidate?.thumbnailURL, 'https://example.com/cover.jpg')
+  assert.equal(candidate?.durationSeconds, 10)
+  assert.equal(parseDouyinAweme({ aweme_id: 'image-only', image_post_info: {} }, null), null)
+})
+
+test('Douyin cover parsing accepts a direct HTTPS cover URL', () => {
+  const candidate = parseDouyinAweme({
+    aweme_id: 'plain-cover',
+    desc: 'Plain cover',
+    video: {
+      play_addr: { url_list: ['https://example.com/video.mp4'] },
+      cover: 'https://example.com/plain-cover.jpg',
+    },
+  }, null)
+  assert.equal(candidate?.thumbnailURL, 'https://example.com/plain-cover.jpg')
+})
+
+test('Douyin gallery parsing exposes a note candidate for the external engine', () => {
+  const candidate = parseDouyinAweme({
+    aweme_id: 'gallery-123',
+    desc: 'A photo note',
+    image_post_info: {
+      images: [
+        { display_image: { url_list: ['https://example.com/gallery-cover.jpg'] } },
+        { display_image: { url_list: ['https://example.com/gallery-2.jpg'] } },
+      ],
+    },
+  }, null)
+  assert.equal(candidate?.url, 'https://www.douyin.com/note/gallery-123')
+  assert.equal(candidate?.formats[0]?.id, 'douyin-gallery')
+  assert.equal(candidate?.thumbnailURL, 'https://example.com/gallery-cover.jpg')
+  assert.equal(candidate?.maxHeight, null)
+})
+
+test('Douyin channel probing preserves the channel URL for engine modes', async () => {
+  const url = 'https://www.douyin.com/user/MS4wLjABAAAAdR6jQo_RhENFIeUHiYbyB7iy6U4PSwY0hkW2HJnXeaQ'
+  const candidates = await probeDouyinURL(url, {}, new AbortController().signal)
+  assert.equal(candidates.length, 1)
+  assert.equal(candidates[0].url, url)
+  assert.equal(candidates[0].id, url)
+})
+
+test('playlist parsing expands entries and supplies a safe YouTube thumbnail fallback', () => {
+  const candidates = parseCandidates({
+    _type: 'playlist',
+    title: 'Playlist',
+    entries: [
+      { id: 'abc12345', title: 'First', webpage_url: 'https://www.youtube.com/watch?v=abc12345' },
+      { id: 'def67890', title: 'Second', webpage_url: 'https://www.youtube.com/watch?v=def67890' },
+    ],
+  }, 'https://www.youtube.com/playlist?list=demo', 'youtube')
+  assert.equal(candidates.length, 2)
+  assert.equal(candidates[0].title, 'First')
+  assert.equal(candidates[0].thumbnailURL, 'https://i.ytimg.com/vi/abc12345/hqdefault.jpg')
+  assert.equal(candidates[1].playlistTitle, 'Playlist')
+})
+
+test('playlist parsing does not expose YouTube channel tabs as downloadable videos', () => {
+  const candidates = parseCandidates({
+    _type: 'playlist',
+    title: 'Channel',
+    entries: [
+      { _type: 'playlist', id: 'channel', title: 'Channel - Videos', webpage_url: 'https://www.youtube.com/@channel/videos' },
+      { _type: 'playlist', id: 'channel', title: 'Channel - Shorts', webpage_url: 'https://www.youtube.com/@channel/shorts' },
+      { _type: 'url', id: 'video123', title: 'A video', url: 'https://www.youtube.com/watch?v=video123' },
+      { _type: 'url', id: 'short123', title: 'A short', thumbnails: [{ url: 'https://i.ytimg.com/vi/short123/oar2.jpg' }], url: 'https://www.youtube.com/shorts/short123' },
+    ],
+  }, 'https://www.youtube.com/@channel', 'youtube')
+  assert.deepEqual(candidates.map((candidate) => candidate.id), ['video123', 'short123'])
+  assert.equal(candidates[1].thumbnailURL, 'https://i.ytimg.com/vi/short123/oar2.jpg')
+})
+
+test('playlist probing exposes YouTube channel tabs as bounded subcollections', () => {
+  const collections = parseProbeCollections({
+    _type: 'playlist',
+    entries: [
+      { _type: 'playlist', id: 'channel', title: 'Channel - Videos', webpage_url: 'https://www.youtube.com/@channel/videos', playlist_count: 42 },
+      { _type: 'playlist', id: 'channel', title: 'Channel - Shorts', webpage_url: 'https://www.youtube.com/@channel/shorts', playlist_count: 7 },
+      { _type: 'url', id: 'video123', title: 'A video', url: 'https://www.youtube.com/watch?v=video123' },
+    ],
+  }, 'https://www.youtube.com/@channel')
+  assert.deepEqual(collections.map((collection) => collection.title), ['Channel - Videos', 'Channel - Shorts'])
+  assert.deepEqual(collections.map((collection) => collection.count), [42, 7])
+})
+
+
+test('download request validation keeps the IPC shape narrow', () => {
+  assert.equal(isDownloadRequest({
+    operationId: 'download-1',
+    url: 'https://youtu.be/abc',
+    kind: 'video',
+    outputDir: 'C:\\Videos',
+    outputTemplate: '%(title)s.%(ext)s',
+    douyin: { mode: 'all', batchSize: 15, music: false, cover: true, metadata: true, folderPerVideo: false },
+  }), true)
+  assert.equal(isDownloadRequest({ operationId: '../bad', url: 'https://youtu.be/abc', kind: 'video' }), false)
 })
 
 test('health check reaches a real HTTP server and validates its payload', async (t) => {

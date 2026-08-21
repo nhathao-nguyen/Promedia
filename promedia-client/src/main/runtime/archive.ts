@@ -43,6 +43,23 @@ export async function extractRuntimeExecutables(
   return installedPaths
 }
 
+export async function stageSingleRuntimeExecutable(
+  artifactPath: string,
+  destination: string,
+  declarations: Readonly<Record<string, RuntimeExecutableDeclaration>>,
+): Promise<Readonly<Record<string, string>>> {
+  const entries = Object.entries(declarations)
+  if (entries.length !== 1) throw new ArchiveError('executable-missing')
+
+  const [logicalName, declaration] = entries[0]
+  const payloadDirectory = join(destination, 'payload')
+  const binaryDirectory = join(payloadDirectory, 'bin')
+  await mkdir(binaryDirectory, { recursive: true })
+  const relativePath = join('bin', declaration.fileName)
+  await copyFile(artifactPath, join(payloadDirectory, relativePath))
+  return { [logicalName]: relativePath }
+}
+
 export function validateArchiveEntries(entries: readonly string[]): void {
   if (entries.length > maximumArchiveEntries) throw new ArchiveError('too-many-entries')
 

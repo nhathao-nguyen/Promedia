@@ -13,7 +13,7 @@ export interface RuntimeExecutableDeclaration {
 }
 
 interface CatalogPlatform {
-  archive: 'zip' | 'tar.xz'
+  archive: 'zip' | 'tar.xz' | 'file'
   assetPattern: string
   versionGroup: string
   matchingVersionGroup?: string
@@ -25,7 +25,8 @@ export interface RuntimeCatalogEntry {
   metadata: RuntimeDisplayMetadata
   source: {
     apiURL: string
-    checksumAssetName: string
+    checksumAssetName?: string
+    checksumFromAssetDigest?: boolean
     allowedHosts: readonly string[]
   }
   platforms: Readonly<Record<string, CatalogPlatform>>
@@ -35,10 +36,12 @@ interface ReleaseAsset {
   name: string
   size: number
   browser_download_url: string
+  digest?: string
 }
 
 interface ReleasePayload {
   assets: ReleaseAsset[]
+  tagName: string
 }
 
 export interface ResolvedRuntimeSource {
@@ -82,22 +85,28 @@ export async function resolveRuntimeSource(
     platformEntry.assetPattern,
     platformEntry.versionGroup,
     platformEntry.matchingVersionGroup,
+    release.tagName,
   )
   if (!selected) throw new RuntimeSourceError('artifact-missing')
 
-  const checksumAsset = release.assets.find((asset) => asset.name === entry.source.checksumAssetName)
-  if (!checksumAsset) throw new RuntimeSourceError('checksum-missing')
+  let checksum: string | null = null
+  if (entry.source.checksumAssetName) {
+    const checksumAsset = release.assets.find((asset) => asset.name === entry.source.checksumAssetName)
+    if (!checksumAsset) throw new RuntimeSourceError('checksum-missing')
 
-  const checksumResponse = await fetchAllowed(
-    checksumAsset.browser_download_url,
-    entry.source.allowedHosts,
-    signal,
-    { 'User-Agent': 'Promedia-runtime-manager' },
-  )
-  const checksum = parseChecksum(
-    await readBoundedText(checksumResponse, maximumChecksumBytes),
-    selected.asset.name,
-  )
+    const checksumResponse = await fetchAllowed(
+      checksumAsset.browser_download_url,
+      entry.source.allowedHosts,
+      signal,
+      { 'User-Agent': 'Promedia-runtime-manager' },
+    )
+    checksum = parseChecksum(
+      await readBoundedText(checksumResponse, maximumChecksumBytes),
+      selected.asset.name,
+    )
+  } else if (entry.source.checksumFromAssetDigest) {
+    checksum = parseAssetDigest(selected.asset.digest)
+  }
   if (!checksum) throw new RuntimeSourceError('checksum-missing')
 
   return {
@@ -118,14 +127,16 @@ export function selectReleaseArtifact(
   assetPattern: string,
   versionGroup: string,
   matchingVersionGroup?: string,
+  releaseVersion?: string,
 ): { asset: ReleaseAsset; version: string } | null {
   const pattern = new RegExp(assetPattern)
 
   const candidates = assets.flatMap((asset) => {
     const match = pattern.exec(asset.name)
-    const version = match?.groups?.[versionGroup]
+    if (!match) return []
+    const version = versionGroup === 'release' ? releaseVersion : match.groups?.[versionGroup]
     const matchingVersion = matchingVersionGroup ? match?.groups?.[matchingVersionGroup] : version
-    if (!version || version !== matchingVersion || !isNumericVersion(version)) return []
+    if (!version || version !== matchingVersion || (versionGroup !== 'release' && !isNumericVersion(version))) return []
     if (!Number.isSafeInteger(asset.size) || asset.size <= 0) return []
     return [{ asset, version }]
   })
@@ -139,6 +150,11 @@ export function parseChecksum(document: string, artifactName: string): string | 
     if (match && match[2] === artifactName) return match[1].toLowerCase()
   }
   return null
+}
+
+export function parseAssetDigest(value: string | undefined): string | null {
+  const match = /^sha256:([a-f\d]{64})$/i.exec(value ?? '')
+  return match?.[1].toLowerCase() ?? null
 }
 
 export async function fetchAllowed(
@@ -190,8 +206,9 @@ function validateCatalog(value: unknown): readonly RuntimeCatalogEntry[] {
     runtimeIDs.add(entry.id)
     validateMetadata(entry.metadata)
     if (
-      typeof entry.source.checksumAssetName !== 'string'
-      || entry.source.checksumAssetName.length === 0
+      (entry.source.checksumAssetName !== undefined
+        && (typeof entry.source.checksumAssetName !== 'string' || entry.source.checksumAssetName.length === 0))
+      || (entry.source.checksumAssetName === undefined && entry.source.checksumFromAssetDigest !== true)
       || !Array.isArray(entry.source.allowedHosts)
       || entry.source.allowedHosts.length === 0
       || !entry.source.allowedHosts.every((host) => typeof host === 'string' && host.length > 0)
@@ -222,7 +239,7 @@ function validateMetadata(metadata: RuntimeDisplayMetadata): void {
 
 function validatePlatform(platform: CatalogPlatform): void {
   if (
-    !['zip', 'tar.xz'].includes(platform.archive)
+    !['zip', 'tar.xz', 'file'].includes(platform.archive)
     || typeof platform.assetPattern !== 'string'
     || typeof platform.versionGroup !== 'string'
     || (platform.matchingVersionGroup !== undefined && typeof platform.matchingVersionGroup !== 'string')
@@ -269,10 +286,17 @@ function parseRelease(document: string): ReleasePayload {
     return typeof asset.name === 'string'
       && typeof asset.browser_download_url === 'string'
       && typeof asset.size === 'number'
-      ? [{ name: asset.name, size: asset.size, browser_download_url: asset.browser_download_url }]
+      ? [{
+          name: asset.name,
+          size: asset.size,
+          browser_download_url: asset.browser_download_url,
+          digest: typeof asset.digest === 'string' ? asset.digest : undefined,
+        }]
       : []
   })
-  return { assets }
+  const rawTagName = (value as { tag_name?: unknown }).tag_name
+  const tagName = typeof rawTagName === 'string' ? rawTagName.replace(/^v/, '') : ''
+  return { assets, tagName }
 }
 
 async function readBoundedText(response: Response, maximumBytes: number): Promise<string> {
