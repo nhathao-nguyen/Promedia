@@ -1,0 +1,134 @@
+.settings-form-row {
+  margin-top: 1.75rem;
+}
+
+.settings-form-row > .settings-primary-button {
+  margin-top: 1.75rem;
+}
+
+.settings-field-help {
+  display: block;
+  margin-top: 0.55rem;
+  color: var(--color-secondary);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.settings-primary-button {
+  display: inline-flex;
+  min-height: 3rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0.7rem 1.1rem;
+  border: 1px solid var(--color-primary);
+  border-radius: 8px;
+  background: var(--color-primary);
+  color: var(--color-surface);
+  font-size: 0.82rem;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 220ms ease, border-color 220ms ease, transform 220ms ease;
+}
+
+.settings-primary-button:hover {
+  border-color: #35322d;
+  background: #35322d;
+  transform: translateY(-1px);
+}
+
+.settings-primary-button:focus-visible {
+  outline: 3px solid rgba(29, 28, 26, 0.2);
+  outline-offset: 3px;
+}
+
+.settings-primary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none;
+}
+
+.settings-panel-footer {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-secondary);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.connection-status-badge {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.connection-status-neutral {
+  border-color: var(--color-border);
+  background: var(--color-muted-surface);
+  color: var(--color-secondary);
+}
+
+.connection-status-loading {
+  border-color: #ded3be;
+  background: #f1eadb;
+  color: #756247;
+}
+
+.connection-status-success {
+  border-color: #cbd8c7;
+  background: #e8eee4;
+  color: #4d6549;
+}
+
+.connection-status-error {
+  border-color: #dec9c0;
+  background: #f0e4df;
+  color: #79564c;
+}
+
+.connection-status-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: #aaa39a;
+}
+
+.connection-status-dot-loading {
+  background: #a98e61;
+  animation: connection-status-pulse 1.8s ease-in-out infinite;
+}
+
+.connection-status-dot-success {
+  background: #6e8b68;
+}
+
+.connection-status-dot-error {
+  background: #a66d5d;
+}
+
+@keyframes connection-status-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 720px) {
+  .settings-primary-button,
+  .settings-form-row > .settings-primary-button {
+    width: 100%;
+    margin-top: 0.5rem;
+  }
+}

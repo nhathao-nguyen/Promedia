@@ -1,0 +1,54 @@
+.dashboard-container {
+  height: 100%;
+  min-height: 0;
+  max-width: 72rem;
+}
+
+.empty-state {
+  min-height: 25rem;
+  margin-top: 1rem;
+  padding: 3rem 1.5rem;
+  border: 1px dashed var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface);
+}
+
+.empty-state-mark {
+  display: block;
+  margin-bottom: 1rem;
+  color: var(--color-secondary);
+  font-family: var(--font-ui);
+  font-size: 2.75rem;
+  line-height: 0.6;
+  transform: rotate(-7deg);
+}
+
+.empty-state-title {
+  margin: 0;
+  color: var(--color-text);
+  font-family: var(--font-ui);
+  font-size: 1.65rem;
+  font-weight: 400;
+  line-height: 1.1;
+}
+
+.empty-state-description {
+  max-width: 28rem;
+  margin: 0.8rem auto 0;
+  color: var(--color-secondary);
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.empty-state-note {
+  margin: 2rem 0 0;
+  color: var(--color-secondary);
+  font-family: var(--font-ui);
+  font-size: 1.05rem;
+}
+
+@media (max-width: 720px) {
+  .empty-state {
+    min-height: 20rem;
+  }
+}

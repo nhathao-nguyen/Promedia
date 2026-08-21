@@ -1,0 +1,8 @@
+@import "tailwindcss";
+@import "./styles/theme.css";
+@import "./styles/shell.css";
+@import "../pages/dashboard/page.css";
+@import "../pages/libraries/page.css";
+@import "../pages/settings/page.css";
+@import "../pages/settings/language.css";
+@import "../pages/settings/server-connection.css";

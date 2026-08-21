@@ -1,0 +1,28 @@
+{
+  "allowedDeprecatedTransitive": {
+    "node_modules/boolean": {
+      "version": "3.2.0",
+      "owner": "electron-builder via @electron/get",
+      "upstreamIssue": "https://github.com/electron-userland/electron-builder/issues/10015",
+      "reviewAfter": "2026-11-21"
+    },
+    "node_modules/glob": {
+      "version": "7.2.3",
+      "owner": "electron-builder via @electron/asar",
+      "upstreamIssue": "https://github.com/electron-userland/electron-builder/issues/10015",
+      "reviewAfter": "2026-11-21"
+    },
+    "node_modules/inflight": {
+      "version": "1.0.6",
+      "owner": "electron-builder via glob",
+      "upstreamIssue": "https://github.com/electron-userland/electron-builder/issues/10015",
+      "reviewAfter": "2026-11-21"
+    },
+    "node_modules/rimraf": {
+      "version": "2.6.3",
+      "owner": "electron-builder via electron-builder-squirrel-windows",
+      "upstreamIssue": "https://github.com/electron-userland/electron-builder/issues/10015",
+      "reviewAfter": "2026-11-21"
+    }
+  }
+}

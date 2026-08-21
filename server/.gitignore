@@ -1,0 +1,16 @@
+# Environment files
+.env
+
+# Binaries and build output
+/bin/
+*.exe
+*.test
+*.out
+
+# Coverage
+coverage.out
+coverage.html
+
+# IDE/editor files
+.idea/
+.vscode/

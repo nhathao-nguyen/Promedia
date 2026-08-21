@@ -1,0 +1,16 @@
+# Environment files
+**/.env
+**/.env.*
+!**/.env.example
+
+# Local code graph data
+.codegraph/
+
+# Local dependencies and generated output
+**/node_modules/
+**/out/
+**/release/
+
+# Operating system files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "runtimes": [
+    {
+      "id": "media-processing",
+      "metadata": {
+        "featureName": {
+          "vi": "Xử lý media trên thiết bị",
+          "en": "On-device media processing"
+        },
+        "description": {
+          "vi": "Chuẩn bị video, âm thanh và đọc thông tin media cho các chức năng Promedia.",
+          "en": "Prepares video and audio and reads media information for Promedia features."
+        },
+        "privacy": {
+          "vi": "Tệp được xử lý trực tiếp trên máy này và không được tải lên chỉ để thực hiện bước xử lý này.",
+          "en": "Files are processed on this device and are not uploaded solely for this processing step."
+        },
+        "componentNames": ["FFmpeg", "FFprobe"],
+        "processingLocation": "device",
+        "license": {
+          "name": "LGPL-2.1-or-later",
+          "url": "https://ffmpeg.org/legal.html"
+        }
+      },
+      "source": {
+        "apiURL": "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest",
+        "checksumAssetName": "checksums.sha256",
+        "allowedHosts": [
+          "api.github.com",
+          "github.com",
+          "objects.githubusercontent.com",
+          "release-assets.githubusercontent.com"
+        ]
+      },
+      "platforms": {
+        "win32-x64": {
+          "archive": "zip",
+          "assetPattern": "^ffmpeg-n(?<version>\\d+(?:\\.\\d+)*)-latest-win64-lgpl-(?<compatibilityVersion>\\d+(?:\\.\\d+)*)\\.zip$",
+          "versionGroup": "version",
+          "matchingVersionGroup": "compatibilityVersion",
+          "executables": {
+            "ffmpeg": { "fileName": "ffmpeg.exe", "probeArgs": ["-version"], "probePattern": "^ffmpeg version " },
+            "ffprobe": { "fileName": "ffprobe.exe", "probeArgs": ["-version"], "probePattern": "^ffprobe version " }
+          }
+        },
+        "win32-arm64": {
+          "archive": "zip",
+          "assetPattern": "^ffmpeg-n(?<version>\\d+(?:\\.\\d+)*)-latest-winarm64-lgpl-(?<compatibilityVersion>\\d+(?:\\.\\d+)*)\\.zip$",
+          "versionGroup": "version",
+          "matchingVersionGroup": "compatibilityVersion",
+          "executables": {
+            "ffmpeg": { "fileName": "ffmpeg.exe", "probeArgs": ["-version"], "probePattern": "^ffmpeg version " },
+            "ffprobe": { "fileName": "ffprobe.exe", "probeArgs": ["-version"], "probePattern": "^ffprobe version " }
+          }
+        },
+        "linux-x64": {
+          "archive": "tar.xz",
+          "assetPattern": "^ffmpeg-n(?<version>\\d+(?:\\.\\d+)*)-latest-linux64-lgpl-(?<compatibilityVersion>\\d+(?:\\.\\d+)*)\\.tar\\.xz$",
+          "versionGroup": "version",
+          "matchingVersionGroup": "compatibilityVersion",
+          "executables": {
+            "ffmpeg": { "fileName": "ffmpeg", "probeArgs": ["-version"], "probePattern": "^ffmpeg version " },
+            "ffprobe": { "fileName": "ffprobe", "probeArgs": ["-version"], "probePattern": "^ffprobe version " }
+          }
+        },
+        "linux-arm64": {
+          "archive": "tar.xz",
+          "assetPattern": "^ffmpeg-n(?<version>\\d+(?:\\.\\d+)*)-latest-linuxarm64-lgpl-(?<compatibilityVersion>\\d+(?:\\.\\d+)*)\\.tar\\.xz$",
+          "versionGroup": "version",
+          "matchingVersionGroup": "compatibilityVersion",
+          "executables": {
+            "ffmpeg": { "fileName": "ffmpeg", "probeArgs": ["-version"], "probePattern": "^ffmpeg version " },
+            "ffprobe": { "fileName": "ffprobe", "probeArgs": ["-version"], "probePattern": "^ffprobe version " }
+          }
+        }
+      }
+    }
+  ]
+}
