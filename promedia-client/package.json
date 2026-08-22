@@ -2,6 +2,11 @@
   "name": "promedia-client",
   "version": "0.1.0",
   "description": "Promedia desktop client",
+  "homepage": "https://github.com/nhathao-nguyen/Promedia",
+  "author": {
+    "name": "nhathao-nguyen",
+    "email": "nhathao-nguyen@users.noreply.github.com"
+  },
   "desktopName": "promedia",
   "main": "out/main/index.js",
   "private": true,

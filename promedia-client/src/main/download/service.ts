@@ -4,6 +4,8 @@ import { isAbsolute, join } from 'node:path'
 import type {
   DownloadCandidate,
   DownloadErrorCode,
+  DownloadAuthSite,
+  DownloadPlatform,
   DownloadProbeCollection,
   DownloadProbeRequest,
   DownloadRequest,
@@ -40,7 +42,8 @@ export class DownloadService {
     const url = normalizeURL(request.url)
     const platform = detectDownloadPlatform(url)
     if (!platform) throw new DownloadEngineError('unsupported-platform')
-    const cookies = request.useCookies ? await this.auth.cookies(platform) : {}
+    const authSite = authSiteForPlatform(platform)
+    const cookies = request.useCookies && authSite ? await this.auth.cookies(authSite) : {}
     if (platform === 'douyin') {
       return {
         candidates: await this.douyinEngine.probe(url, cookies, signal),
@@ -48,14 +51,15 @@ export class DownloadService {
       }
     }
     await this.requireRuntime(signal, false)
-    return this.engine.probe(url, signal, request.useCookies ? this.auth.cookieFile(platform) : null)
+    return this.engine.probe(url, signal, request.useCookies && authSite ? this.auth.cookieFile(authSite) : null)
   }
 
   async thumbnail(request: DownloadThumbnailRequest, signal: AbortSignal): Promise<string | null> {
     const sourceURL = normalizeURL(request.sourceURL)
     const platform = detectDownloadPlatform(sourceURL)
     if (!platform) throw new DownloadEngineError('unsupported-platform')
-    const cookies = request.useCookies ? await this.auth.cookies(platform) : {}
+    const authSite = authSiteForPlatform(platform)
+    const cookies = request.useCookies && authSite ? await this.auth.cookies(authSite) : {}
     return fetchThumbnailDataURL(request.thumbnailURL, sourceURL, cookies, signal)
   }
 
@@ -68,12 +72,14 @@ export class DownloadService {
     await mkdir(normalized.outputDir, { recursive: true })
     const platform = detectDownloadPlatform(normalized.url)
     if (!platform) throw new DownloadEngineError('unsupported-platform')
+    const authSite = authSiteForPlatform(platform)
 
-    if (platform === 'douyin') {
+    if (normalized.engine === 'douyin') {
       await this.runtime.resolveExecutable('douyin-engine', 'douyin-engine', signal)
+      if (normalized.options.ensureH264) await this.runtime.resolveExecutable('media-processing', 'ffmpeg', signal)
       return this.douyinEngine.download({
         request: normalized,
-        cookies: normalized.useCookies ? await this.auth.cookies(platform) : {},
+        cookies: normalized.useCookies && authSite ? await this.auth.cookies(authSite) : {},
         databasePath: join(this.userDataRoot, 'douyin-library.db'),
       }, signal, report)
     }
@@ -82,7 +88,7 @@ export class DownloadService {
 
     const engineRequest: DownloadEngineRequest = {
       ...normalized,
-      cookieFile: normalized.useCookies ? this.auth.cookieFile(platform) : null,
+      cookieFile: normalized.useCookies && authSite ? this.auth.cookieFile(authSite) : null,
       archivePath: join(this.userDataRoot, 'download-archive.txt'),
     }
     return this.engine.download(engineRequest, signal, report)
@@ -100,6 +106,10 @@ export class DownloadService {
     if (needsMedia) await this.runtime.resolveExecutable('media-processing', 'ffmpeg', signal)
   }
 
+}
+
+function authSiteForPlatform(platform: DownloadPlatform): DownloadAuthSite | null {
+  return platform === 'youtube' ? null : platform
 }
 
 function normalizeURL(value: string): string {
@@ -120,30 +130,34 @@ function normalizeRequest(request: DownloadRequest): DownloadRequest {
   if (!isAbsolute(request.outputDir) || request.outputDir.includes('\0')) {
     throw new DownloadEngineError('invalid-request')
   }
-  if (!request.outputTemplate.trim() || request.outputTemplate.includes('\0') || isAbsolute(request.outputTemplate) || request.outputTemplate.split(/[\\/]/).includes('..')) {
-    throw new DownloadEngineError('invalid-request')
-  }
-  if (!['mp3', 'm4a', 'opus', 'flac', 'wav'].includes(request.audioFormat)) {
-    throw new DownloadEngineError('invalid-request')
-  }
-  if (!['mp4', 'mkv', 'webm'].includes(request.container)) throw new DownloadEngineError('invalid-request')
-  if (!['flat', 'playlist', 'channel'].includes(request.folderMode)) throw new DownloadEngineError('invalid-request')
-  if (request.maxHeight !== null && (!Number.isSafeInteger(request.maxHeight) || request.maxHeight < 144 || request.maxHeight > 8_640)) {
-    throw new DownloadEngineError('invalid-request')
-  }
-  if (!Number.isSafeInteger(request.douyin.batchSize) || request.douyin.batchSize < 1 || request.douyin.batchSize > 10_000) {
-    throw new DownloadEngineError('invalid-request')
-  }
-  if (!['all', 'batch', 'new'].includes(request.douyin.mode)) throw new DownloadEngineError('invalid-request')
   if (request.proxy && !isValidProxy(request.proxy)) throw new DownloadEngineError('invalid-request')
+  if (request.engine === 'douyin') {
+    if (!Number.isSafeInteger(request.options.batchSize) || request.options.batchSize < 1 || request.options.batchSize > 10_000) {
+      throw new DownloadEngineError('invalid-request')
+    }
+    if (!['all', 'batch', 'new'].includes(request.options.mode)) throw new DownloadEngineError('invalid-request')
+    return {
+      ...request,
+      url,
+      options: { ...request.options },
+    }
+  }
+
+  if (!request.options.outputTemplate.trim() || request.options.outputTemplate.includes('\0') || isAbsolute(request.options.outputTemplate) || request.options.outputTemplate.split(/[\\/]/).includes('..')) {
+    throw new DownloadEngineError('invalid-request')
+  }
+  if (!['mp3', 'm4a', 'opus', 'flac', 'wav'].includes(request.options.audioFormat)) {
+    throw new DownloadEngineError('invalid-request')
+  }
+  if (!['mp4', 'mkv', 'webm'].includes(request.options.container)) throw new DownloadEngineError('invalid-request')
+  if (!['flat', 'playlist', 'channel'].includes(request.options.folderMode)) throw new DownloadEngineError('invalid-request')
+  if (request.options.maxHeight !== null && (!Number.isSafeInteger(request.options.maxHeight) || request.options.maxHeight < 144 || request.options.maxHeight > 8_640)) {
+    throw new DownloadEngineError('invalid-request')
+  }
   return {
     ...request,
     url,
-    ensureH264: request.ensureH264 === true,
-    douyin: {
-      ...request.douyin,
-      avatar: request.douyin.avatar === true,
-    },
+    options: { ...request.options },
   }
 }
 

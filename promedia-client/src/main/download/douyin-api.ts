@@ -16,10 +16,14 @@ export async function probeDouyinURL(
       const payload = await fetchJSON(detailEndpoint, { aweme_id: videoID, aid: '6383' }, cookies, signal)
       const candidate = parseDouyinAweme(payload.aweme_detail, null)
       if (candidate) return [candidate]
-    } catch {
+    } catch (error) {
+      if (signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) {
+        throw new DOMException('Cancelled', 'AbortError')
+      }
       // Bộ engine bên ngoài vẫn có luồng ký URL và có thể tải dù API probe nhẹ bị chặn.
     }
-    return [fallbackCandidate(url)]
+    const metadata = await fetchDouyinPageMetadata(url, cookies, signal)
+    return [fallbackCandidate(url, metadata?.title ?? null, metadata?.thumbnailURL ?? null)]
   }
 
   const secUserID = extractSecUserID(url)
@@ -74,7 +78,11 @@ export function parseDouyinAweme(value: unknown, playlistTitle: string | null): 
   }
 }
 
-function fallbackCandidate(url: string, titleOverride: string | null = null): DownloadCandidate {
+function fallbackCandidate(
+  url: string,
+  titleOverride: string | null = null,
+  thumbnailURL: string | null = null,
+): DownloadCandidate {
   let title = titleOverride ?? url
   try {
     const parsed = new URL(url)
@@ -90,12 +98,85 @@ function fallbackCandidate(url: string, titleOverride: string | null = null): Do
     uploader: null,
     durationSeconds: null,
     durationLabel: null,
-    thumbnailURL: null,
+    thumbnailURL,
     webpageURL: url,
     playlistTitle: null,
     formats: [],
     maxHeight: null,
   }
+}
+
+export function parseDouyinPageMetadata(html: string): { title: string | null; thumbnailURL: string | null } {
+ const title = readDouyinMetaContent(html, ['og:title', 'twitter:title'])
+   ?? readDouyinTitle(html)
+ const thumbnailURL = firstHTTPSURL(
+   readDouyinMetaContent(html, ['og:image', 'twitter:image', 'twitter:image:src']),
+ )
+  return {
+    title: title ? decodeHTML(title).replace(/\s+/g, ' ').trim().slice(0, 500) || null : null,
+    thumbnailURL,
+  }
+}
+
+async function fetchDouyinPageMetadata(
+  url: string,
+  cookies: Readonly<Record<string, string>>,
+  signal: AbortSignal,
+): Promise<{ title: string | null; thumbnailURL: string | null } | null> {
+  const headers: Record<string, string> = {
+    accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    referer: `${douyinOrigin}/`,
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
+  }
+  const cookiesValue = cookieHeader(cookies)
+  if (cookiesValue) headers.cookie = cookiesValue
+  try {
+    const response = await fetch(url, { headers, signal })
+    if (!response.ok) return null
+    const length = Number(response.headers.get('content-length') ?? 0)
+    if (Number.isFinite(length) && length > maximumResponseBytes) return null
+    const text = await response.text()
+    if (text.length > maximumResponseBytes) return null
+    return parseDouyinPageMetadata(text)
+  } catch (error) {
+    if (signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) {
+      throw new DOMException('Cancelled', 'AbortError')
+    }
+    return null
+  }
+}
+
+function readDouyinMetaContent(html: string, names: readonly string[]): string | null {
+  const wanted = new Set(names.map((name) => name.toLowerCase()))
+  const tags = html.match(/<meta\b[^>]*>/gi) ?? []
+  for (const tag of tags) {
+    const name = /(?:property|name)\s*=\s*["']([^"']+)["']/i.exec(tag)?.[1]?.toLowerCase()
+    if (!name || !wanted.has(name)) continue
+    const content = /content\s*=\s*["']([^"']*)["']/i.exec(tag)?.[1]
+    if (content) return content
+  }
+  return null
+}
+
+function readDouyinTitle(html: string): string | null {
+  return /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1] ?? null
+}
+
+function decodeHTML(value: string): string {
+  return value
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+}
+
+function cookieHeader(cookies: Readonly<Record<string, string>>): string {
+  return Object.entries(cookies)
+    .filter(([name, value]) => name && value && !name.includes(';') && !value.includes('\n'))
+    .map(([name, value]) => `${name}=${value}`)
+    .join('; ')
 }
 
 async function fetchJSON(

@@ -9,8 +9,8 @@
           "en": "Video download engine"
         },
         "description": {
-          "vi": "yt-dlp dùng để phân tích và tải video từ Facebook, TikTok, Douyin và YouTube trên thiết bị.",
-          "en": "yt-dlp analyzes and downloads videos from Facebook, TikTok, Douyin, and YouTube on this device."
+          "vi": "yt-dlp dùng để phân tích và tải video từ Facebook, TikTok và YouTube trên thiết bị.",
+          "en": "yt-dlp analyzes and downloads videos from Facebook, TikTok, and YouTube on this device."
         },
         "privacy": {
           "vi": "Liên kết và phiên đăng nhập chỉ được dùng trên thiết bị để thực hiện lượt tải; Promedia không tải media gốc lên máy chủ.",

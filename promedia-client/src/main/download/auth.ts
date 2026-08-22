@@ -8,6 +8,7 @@ import type {
   DownloadAuthSite,
   DownloadAuthStatus,
 } from '../../shared/download.ts'
+import { downloadAuthSites } from '../../shared/download.ts'
 
 interface SiteConfig {
   domain: string
@@ -19,7 +20,6 @@ const siteConfigs: Readonly<Record<DownloadAuthSite, SiteConfig>> = {
   facebook: { domain: 'facebook.com', loginURL: 'https://www.facebook.com/', markers: ['c_user', 'xs'] },
   tiktok: { domain: 'tiktok.com', loginURL: 'https://www.tiktok.com/', markers: ['sessionid'] },
   douyin: { domain: 'douyin.com', loginURL: 'https://www.douyin.com/', markers: ['sessionid'] },
-  youtube: { domain: 'youtube.com', loginURL: 'https://www.youtube.com/', markers: ['SAPISID', 'SID'] },
 }
 
 export class DownloadAuthService {
@@ -28,7 +28,7 @@ export class DownloadAuthService {
   constructor(private readonly userDataRoot: string) {}
 
   async statuses(): Promise<DownloadAuthStatus[]> {
-    return Promise.all((Object.keys(siteConfigs) as DownloadAuthSite[]).map((site) => this.status(site)))
+    return Promise.all(downloadAuthSites.map((site) => this.status(site)))
   }
 
   async status(site: DownloadAuthSite): Promise<DownloadAuthStatus> {

@@ -1,4 +1,4 @@
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { readFile, readdir, realpath, rm, stat } from 'node:fs/promises'
 
 import type {
@@ -7,7 +7,8 @@ import type {
   DownloadFormat,
   DownloadProbeCollection,
   DownloadProgress,
-  DownloadRequest,
+  YtDlpDownloadOptions,
+  YtDlpDownloadRequest,
   DownloadResult,
 } from '../../shared/download.ts'
 import { detectDownloadPlatform } from './sites.ts'
@@ -31,7 +32,7 @@ export interface DownloadEngineRuntime {
   resolveExecutable(runtimeID: string, logicalName: string, signal: AbortSignal): Promise<string>
 }
 
-export interface DownloadEngineRequest extends DownloadRequest {
+export interface DownloadEngineRequest extends YtDlpDownloadRequest {
   cookieFile: string | null
   archivePath: string
 }
@@ -93,47 +94,32 @@ export class YtDlpDownloadEngine {
     let activeRequest = request
     let attempt = await this.runAttempt(command, activeRequest, platform, signal, report, 'normal', ffmpegDirectory)
     if (!attempt.result.primaryFile && attempt.result.status === 'error' && platform === 'youtube' && request.cookieFile && attempt.result.errorCode === 'http-403') {
-      report(progressFor(request.operationId, 'preparing', 'YouTube đang thử lại không dùng cookie.'))
+      report(progressFor(request.operationId, 'preparing', 'retry-without-cookies'))
       activeRequest = { ...request, cookieFile: null }
       attempt = await this.runAttempt(command, activeRequest, platform, signal, report, 'normal', ffmpegDirectory)
     }
     if (!attempt.result.primaryFile && attempt.result.status === 'error' && platform === 'youtube' && attempt.result.errorCode === 'http-403') {
-      report(progressFor(request.operationId, 'preparing', 'YouTube đang thử luồng tương thích.'))
+      report(progressFor(request.operationId, 'preparing', 'retry-adaptive'))
       attempt = await this.runAttempt(command, activeRequest, platform, signal, report, 'adaptive', ffmpegDirectory)
     }
     if (!attempt.result.primaryFile && attempt.result.status === 'error' && platform === 'youtube' && attempt.result.errorCode === 'http-403') {
-      report(progressFor(request.operationId, 'preparing', 'YouTube đang thử luồng phát tương thích rộng hơn.'))
+      report(progressFor(request.operationId, 'preparing', 'retry-progressive'))
       attempt = await this.runAttempt(command, activeRequest, platform, signal, report, 'progressive', ffmpegDirectory)
     }
     if (!attempt.result.primaryFile && attempt.result.status === 'error' && attempt.result.errorCode === 'format-unavailable') {
-      report(progressFor(request.operationId, 'preparing', 'Định dạng đã thay đổi, đang thử lựa chọn tự động.'))
+      report(progressFor(request.operationId, 'preparing', 'retry-automatic-format'))
       attempt = await this.runAttempt(command, activeRequest, platform, signal, report, 'format', ffmpegDirectory)
     }
 
-    if (attempt.result.status === 'done' && request.ensureH264 === true && request.kind === 'video' && attempt.result.files.length > 0) {
+    if (attempt.result.status === 'done' && request.options.ensureH264 && request.options.kind === 'video' && attempt.result.files.length > 0) {
       try {
         const files = await ensureH264Files(this.runtime, request.operationId, attempt.result.files, signal, report)
         const primaryFile = files.find((file) => /\.(?:avi|m4v|mkv|mov|mp4|mpeg|mpg|ts|webm)$/i.test(file)) ?? files[0] ?? null
         attempt = { ...attempt, result: { ...attempt.result, files, primaryFile } }
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') throw error
-        report(progressFor(request.operationId, 'error', null, 'output-failed'))
-        return { operationId: request.operationId, status: 'error', files: attempt.result.files, primaryFile: attempt.result.primaryFile, errorCode: 'output-failed' }
-      }
-    }
-
-    if (attempt.result.status === 'done' && request.douyin.music && platform === 'douyin' && request.kind === 'video' && attempt.result.primaryFile) {
-      const ffmpeg = await this.runtime.resolveExecutable(mediaRuntimeID, 'ffmpeg', signal)
-      const musicFile = await extractDouyinMusic(
-        ffmpeg,
-        request,
-        attempt.result.primaryFile,
-        signal,
-        report,
-      )
-      return {
-        ...attempt.result,
-        files: [...attempt.result.files, musicFile],
+        report(progressFor(request.operationId, 'error', 'error', 'output-failed'))
+        return { operationId: request.operationId, status: 'error', files: attempt.result.files, primaryFile: attempt.result.primaryFile, addedItemCount: 0, errorCode: 'output-failed' }
       }
     }
     return attempt.result
@@ -167,7 +153,7 @@ export class YtDlpDownloadEngine {
     const legacyFiles = new Set<string>()
     let skipped = false
     const startedAt = Date.now()
-    report(progressFor(request.operationId, 'preparing', 'Đang chuẩn bị lượt tải.'))
+    report(progressFor(request.operationId, 'preparing', 'preparing'))
 
     try {
       const process = await runProcess(command, args, signal, maximumProcessOutputBytes, (line, stream) => {
@@ -188,7 +174,7 @@ export class YtDlpDownloadEngine {
         if (merge?.[1]) legacyFiles.add(merge[1])
         if (/has already been recorded in the archive|has already been downloaded/i.test(line)) skipped = true
         if (stream === 'stderr' && /\b(error|warning)\b/i.test(line)) {
-          report(progressFor(request.operationId, 'postprocessing', 'Đang hoàn tất xử lý media.'))
+          report(progressFor(request.operationId, 'postprocessing', 'postprocessing'))
         }
       })
       if (process.aborted) return { result: cancelledResult(request.operationId), rawError: '' }
@@ -196,13 +182,14 @@ export class YtDlpDownloadEngine {
       if (process.code !== 0) {
         const rawError = `${process.stderr}\n${process.stdout}`
         const errorCode = classifyDownloadError(rawError)
-        report(progressFor(request.operationId, 'error', null, errorCode))
+        report(progressFor(request.operationId, 'error', 'error', errorCode))
         return {
           result: {
             operationId: request.operationId,
             status: 'error',
             files: [...files],
-            primaryFile: primaryOutputFile([...files], request.kind),
+            primaryFile: primaryOutputFile([...files], request.options.kind),
+            addedItemCount: 0,
             errorCode,
           },
           rawError,
@@ -213,19 +200,20 @@ export class YtDlpDownloadEngine {
       const reportedFiles = new Set([...files, ...legacyFiles, ...sidecarFiles])
       const archiveSkipped = skipped && reportedFiles.size === 0
       if (!archiveSkipped && reportedFiles.size === 0) {
-        const fallbackFile = await findRecentOutputFile(request.outputDir, startedAt, request.kind)
+        const fallbackFile = await findRecentOutputFile(request.outputDir, startedAt, request.options.kind)
         if (fallbackFile) reportedFiles.add(fallbackFile)
       }
       const validatedFiles = archiveSkipped ? [] : await validateOutputFiles([...reportedFiles], request.outputDir)
       if (!archiveSkipped && validatedFiles.length === 0) {
         const errorCode = 'output-failed' as const
-        report(progressFor(request.operationId, 'error', null, errorCode))
+        report(progressFor(request.operationId, 'error', 'error', errorCode))
         return {
           result: {
             operationId: request.operationId,
             status: 'error',
             files: [],
             primaryFile: null,
+            addedItemCount: 0,
             errorCode,
           },
           rawError: 'No valid output file was reported by yt-dlp',
@@ -236,9 +224,10 @@ export class YtDlpDownloadEngine {
         operationId: request.operationId,
         status: archiveSkipped ? 'skipped' : 'done',
         files: validatedFiles,
-        primaryFile: primaryOutputFile(validatedFiles, request.kind),
+        primaryFile: primaryOutputFile(validatedFiles, request.options.kind),
+        addedItemCount: archiveSkipped ? 0 : 1,
       }
-      report(progressFor(request.operationId, 'finished', archiveSkipped ? 'Video đã có trong lịch sử tải.' : 'Tải hoàn tất.'))
+      report(progressFor(request.operationId, 'finished', 'finished'))
       return { result, rawError: '' }
     } finally {
       await rm(sidecarPath, { force: true }).catch(() => undefined)
@@ -284,49 +273,52 @@ function buildArguments(
 
   if (process.platform === 'win32') args.push('--windows-filenames')
 
-  const isDouyinCollection = platform === 'douyin'
-  if (!isDouyinCollection) args.push('--no-playlist')
+  args.push('--no-playlist')
 
-  if (request.kind === 'audio') {
-    args.push('-x', '--audio-format', request.audioFormat, '--audio-quality', '0')
+  if (request.options.kind === 'audio') {
+    args.push('-x', '--audio-format', request.options.audioFormat, '--audio-quality', '0')
   } else {
-    const height = request.maxHeight === null ? '' : `[height<=${request.maxHeight}]`
-    const selector = mode === 'progressive' || mode === 'format'
-      ? `best[height<=${request.maxHeight ?? 10_000}]/best`
-      : `bestvideo*${height}+bestaudio/best${height}/best`
-    args.push('-f', selector, '--merge-output-format', request.container)
+    const selector = buildDownloadFormatSelector(request.options, mode)
+    args.push('-f', selector, '--merge-output-format', request.options.container)
   }
 
-  if (request.embedThumbnail) args.push('--embed-thumbnail')
-  if (request.embedMetadata) args.push('--embed-metadata')
-  if (request.writeSubtitles) {
-    args.push('--write-subs', '--sub-langs', request.subtitleLanguages || 'vi,en')
-    if (request.autoSubtitles) args.push('--write-auto-subs')
-    if (request.embedSubtitles && request.kind === 'video') args.push('--embed-subs')
+  if (request.options.embedThumbnail) args.push('--embed-thumbnail')
+  if (request.options.embedMetadata) args.push('--embed-metadata')
+  if (request.options.writeSubtitles) {
+    args.push('--write-subs', '--sub-langs', request.options.subtitleLanguages || 'vi,en')
+    if (request.options.autoSubtitles) args.push('--write-auto-subs')
+    if (request.options.embedSubtitles && request.options.kind === 'video') args.push('--embed-subs')
   }
-  if (request.useArchive || (platform === 'douyin' && request.douyin.mode === 'new')) {
+  if (request.options.useArchive) {
     args.push('--download-archive', request.archivePath)
   }
-  if (request.forceOverwrite) args.push('--force-overwrites')
+  if (request.options.forceOverwrite) args.push('--force-overwrites')
   else args.push('--no-overwrites', '--no-post-overwrites')
   if (request.proxy) args.push('--proxy', request.proxy)
   if (request.cookieFile) args.push('--cookies', request.cookieFile)
 
   if (platform === 'youtube' && mode === 'adaptive') args.push('--extractor-args', 'youtube:player_client=web_embedded')
-  if (request.douyin.cover && platform === 'douyin') args.push('--write-thumbnail', '--convert-thumbnails', 'jpg')
-  if (request.douyin.metadata && platform === 'douyin') args.push('--write-info-json')
-  if (request.douyin.mode === 'batch' && platform === 'douyin') args.push('--playlist-end', String(Math.max(1, request.douyin.batchSize)))
 
   const template = outputTemplate(request)
   args.push('-o', template, request.url)
   return args
 }
 
+export function buildDownloadFormatSelector(
+  request: Pick<YtDlpDownloadOptions, 'kind' | 'maxHeight'>,
+  mode: 'normal' | 'adaptive' | 'progressive' | 'format',
+): string {
+  if (request.kind === 'audio') return 'bestaudio/best'
+  const height = request.maxHeight === null ? '' : `[height<=${request.maxHeight}]`
+  if (mode === 'progressive') return `best${height}/best`
+  if (mode === 'format') return 'bestvideo*+bestaudio/best'
+  return `bestvideo*${height}+bestaudio/best${height}/best`
+}
+
 function outputTemplate(request: DownloadEngineRequest): string {
-  let template = request.outputTemplate.trim() || '%(title)s [%(id)s].%(ext)s'
-  if (request.folderMode === 'channel') template = `%(uploader)s/${template}`
-  if (request.folderMode === 'playlist' && request.playlistTitle) template = `${safeSegment(request.playlistTitle)}/${template}`
-  if (request.douyin.folderPerVideo && detectDownloadPlatform(request.url) === 'douyin') template = `%(id)s/${template}`
+  let template = request.options.outputTemplate.trim() || '%(title)s [%(id)s].%(ext)s'
+  if (request.options.folderMode === 'channel') template = `%(uploader)s/${template}`
+  if (request.options.folderMode === 'playlist' && request.playlistTitle) template = `${safeSegment(request.playlistTitle)}/${template}`
   return join(request.outputDir, template)
 }
 
@@ -636,14 +628,14 @@ function parseProgress(operationId: string, line: string): DownloadProgress | nu
     speed: cleanOptional(values[4]),
     eta: cleanOptional(values[5]),
     filePath: null,
-    message: null,
+    detailCode: null,
   }
 }
 
 function progressFor(
   operationId: string,
   phase: DownloadProgress['phase'],
-  message: string | null,
+  detailCode: DownloadProgress['detailCode'],
   errorCode?: DownloadErrorCode,
 ): DownloadProgress {
   return {
@@ -655,29 +647,9 @@ function progressFor(
     speed: null,
     eta: null,
     filePath: null,
-    message,
+    detailCode,
     errorCode,
   }
-}
-
-async function extractDouyinMusic(
-  ffmpeg: string,
-  request: DownloadEngineRequest,
-  inputFile: string,
-  signal: AbortSignal,
-  report: (progress: DownloadProgress) => void,
-): Promise<string> {
-  const output = join(dirname(inputFile), `${basename(inputFile, extname(inputFile))}_music.mp3`)
-  report(progressFor(request.operationId, 'converting', 'Đang tách nhạc Douyin.'))
-  const result = await runProcess(
-    ffmpeg,
-    ['-y', '-i', inputFile, '-vn', '-codec:a', 'libmp3lame', '-q:a', '2', output],
-    signal,
-    maximumProcessOutputBytes,
-  )
-  if (result.aborted) throw cancellationError()
-  if (result.code !== 0) throw new DownloadEngineError('output-failed')
-  return output
 }
 
 function classifiedError(raw: string): Error {
@@ -742,7 +714,7 @@ async function readSidecarFiles(path: string): Promise<string[]> {
 async function findRecentOutputFile(
   outputDirectory: string,
   startedAt: number,
-  kind: DownloadRequest['kind'],
+    kind: YtDlpDownloadOptions['kind'],
 ): Promise<string | null> {
   const extensions = kind === 'audio' ? audioExtensions : videoExtensions
   const candidates: Array<{ path: string; mtimeMs: number }> = []
@@ -785,13 +757,13 @@ async function findRecentOutputFile(
   return recent.length === 1 ? recent[0].path : null
 }
 
-function primaryOutputFile(files: readonly string[], kind: DownloadRequest['kind']): string | null {
+function primaryOutputFile(files: readonly string[], kind: YtDlpDownloadOptions['kind']): string | null {
   const extensions = kind === 'audio' ? audioExtensions : videoExtensions
   return files.find((file) => extensions.has(extname(file).toLowerCase())) ?? files[0] ?? null
 }
 
 function cancelledResult(operationId: string): DownloadResult {
-  return { operationId, status: 'cancelled', files: [], primaryFile: null, errorCode: 'cancelled' }
+  return { operationId, status: 'cancelled', files: [], primaryFile: null, addedItemCount: 0, errorCode: 'cancelled' }
 }
 
 function cancellationError(): DOMException {

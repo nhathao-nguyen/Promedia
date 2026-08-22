@@ -2,14 +2,24 @@ import type {
   DownloadAuthEvent,
   DownloadAuthSite,
   DownloadAuthStatus,
+  DownloadChannelRecord,
   DownloadCandidate,
   DownloadErrorCode,
   DownloadFolderMode,
-  DownloadKind,
+  DownloadPlatform,
   DownloadProbeCollection,
   DownloadProgress,
+  DownloadProgressDetailCode,
   DownloadResult,
+  DownloadOperationStatus,
 } from '../../../../shared/download.ts'
+import {
+  downloadAuthSites,
+  requiredDownloadRuntimeIDsForDownload,
+  requiredDownloadRuntimeIDsForProbe,
+  requiredDownloadRuntimeIDsForProxyTest,
+} from '../../../../shared/download.ts'
+import { buildDownloadRequest, type DownloadControlState } from './request.ts'
 import { t } from '../../i18n'
 
 type QueueState = 'fetching' | 'ready' | 'downloading' | 'done' | 'skipped' | 'error' | 'cancelled'
@@ -29,7 +39,7 @@ interface PendingProbeCollection extends DownloadProbeCollection {
   useCookies: boolean
 }
 
-const authSites: readonly DownloadAuthSite[] = ['douyin']
+const authSites: readonly DownloadAuthSite[] = downloadAuthSites
 const resolutionOptions = [
   { value: '', label: 'downloads.best' as const },
   { value: '2160', label: '2160p' },
@@ -79,6 +89,8 @@ export function downloadPage(): string {
               <span class="download-folder-value" data-download-folder-value></span>
             </div>
 
+            <fieldset class="download-platform-fieldset" data-yt-options>
+              <legend>${t('downloads.platform.youtube')}</legend>
             <div class="download-grid download-grid-three">
               <label class="download-field">
                 <span class="download-label">${t('downloads.kind.video')}</span>
@@ -136,21 +148,26 @@ export function downloadPage(): string {
                   <label class="download-check"><input type="checkbox" data-download-embed-subs disabled checked /> <span>${t('downloads.embedSubs')}</span></label>
                   <label class="download-check"><input type="checkbox" data-download-thumbnail checked /> <span>${t('downloads.embedThumbnail')}</span></label>
                   <label class="download-check"><input type="checkbox" data-download-metadata checked /> <span>${t('downloads.embedMetadata')}</span></label>
+                  <label class="download-check"><input type="checkbox" data-download-h264 /> <span>${t('downloads.ensureH264')}</span></label>
                   <label class="download-check"><input type="checkbox" data-download-archive /> <span>${t('downloads.useArchive')}</span></label>
                   <label class="download-check"><input type="checkbox" data-download-overwrite /> <span>${t('downloads.forceOverwrite')}</span></label>
                 </div>
-                <label class="download-field">
-                  <span class="download-label">${t('downloads.proxy')}</span>
-                  <div class="download-inline-field">
-                    <input class="download-input" data-download-proxy placeholder="${t('downloads.proxyPlaceholder')}" spellcheck="false" />
-                    <button class="download-secondary-button" type="button" data-download-proxy-test>${t('downloads.proxyTest')}</button>
-                  </div>
-                  <span class="download-field-help" data-download-proxy-feedback></span>
-                </label>
               </div>
             </details>
+            </fieldset>
 
-            <section class="download-subpanel" aria-labelledby="download-douyin-title">
+            <section class="download-common-options" aria-labelledby="download-proxy-title">
+              <label class="download-field">
+                <span class="download-label" id="download-proxy-title">${t('downloads.proxy')}</span>
+                <div class="download-inline-field">
+                  <input class="download-input" data-download-proxy placeholder="${t('downloads.proxyPlaceholder')}" spellcheck="false" />
+                  <button class="download-secondary-button" type="button" data-download-proxy-test>${t('downloads.proxyTest')}</button>
+                </div>
+                <span class="download-field-help" data-download-proxy-feedback></span>
+              </label>
+            </section>
+
+            <fieldset class="download-subpanel download-platform-fieldset" aria-labelledby="download-douyin-title" data-douyin-options>
               <div class="download-subpanel-heading">
                 <h4 id="download-douyin-title">${t('downloads.douyinTitle')}</h4>
                 <span class="download-subpanel-note">${t('downloads.platform.douyin')}</span>
@@ -172,10 +189,12 @@ export function downloadPage(): string {
               <div class="download-check-grid">
                 <label class="download-check"><input type="checkbox" data-douyin-music /> <span>${t('downloads.douyinMusic')}</span></label>
                 <label class="download-check"><input type="checkbox" data-douyin-cover checked /> <span>${t('downloads.douyinCover')}</span></label>
+                <label class="download-check"><input type="checkbox" data-douyin-avatar /> <span>${t('downloads.douyinAvatar')}</span></label>
                 <label class="download-check"><input type="checkbox" data-douyin-metadata checked /> <span>${t('downloads.douyinMetadata')}</span></label>
                 <label class="download-check"><input type="checkbox" data-douyin-folder /> <span>${t('downloads.douyinFolderPerVideo')}</span></label>
+                <label class="download-check"><input type="checkbox" data-douyin-h264 /> <span>${t('downloads.ensureH264')}</span></label>
               </div>
-            </section>
+            </fieldset>
 
             <section class="download-subpanel" aria-labelledby="download-auth-title">
               <div class="download-subpanel-heading">
@@ -185,6 +204,17 @@ export function downloadPage(): string {
                 </div>
               </div>
               <div class="download-auth-list" data-download-auth-list></div>
+            </section>
+
+            <section class="download-subpanel" aria-labelledby="download-history-title">
+              <div class="download-subpanel-heading">
+                <div>
+                  <h4 id="download-history-title">${t('downloads.historyTitle')}</h4>
+                  <p class="download-field-help">${t('downloads.historyDescription')}</p>
+                </div>
+                <button class="download-link-button" type="button" data-download-history-refresh>${t('downloads.historyRefresh')}</button>
+              </div>
+              <div class="download-history-list" data-download-history-list aria-live="polite"></div>
             </section>
           </section>
 
@@ -210,7 +240,7 @@ export function downloadPage(): string {
         </div>
       </div>
       <div class="download-subchooser-overlay" data-download-subchooser hidden>
-        <section class="download-subchooser-modal" role="dialog" aria-modal="true" aria-labelledby="download-subchooser-title">
+        <section class="download-subchooser-modal" role="dialog" aria-modal="true" aria-labelledby="download-subchooser-title" tabindex="-1">
           <div class="download-subchooser-heading">
             <div>
               <p class="download-panel-kicker">${t('downloads.subchooserKicker')}</p>
@@ -249,18 +279,25 @@ export function setupDownload(root: HTMLDivElement): () => void {
   const embedSubsInput = root.querySelector<HTMLInputElement>('[data-download-embed-subs]')!
   const thumbnailInput = root.querySelector<HTMLInputElement>('[data-download-thumbnail]')!
   const metadataInput = root.querySelector<HTMLInputElement>('[data-download-metadata]')!
+  const h264Input = root.querySelector<HTMLInputElement>('[data-download-h264]')!
   const archiveInput = root.querySelector<HTMLInputElement>('[data-download-archive]')!
   const overwriteInput = root.querySelector<HTMLInputElement>('[data-download-overwrite]')!
   const proxyInput = root.querySelector<HTMLInputElement>('[data-download-proxy]')!
   const proxyTestButton = root.querySelector<HTMLButtonElement>('[data-download-proxy-test]')!
   const proxyFeedback = root.querySelector<HTMLElement>('[data-download-proxy-feedback]')!
+  const ytOptionGroups = [...root.querySelectorAll<HTMLElement>('[data-yt-options]')]
+  const douyinOptionGroup = root.querySelector<HTMLElement>('[data-douyin-options]')!
   const douyinModeInput = root.querySelector<HTMLSelectElement>('[data-douyin-mode]')!
   const douyinBatchInput = root.querySelector<HTMLInputElement>('[data-douyin-batch]')!
   const douyinMusicInput = root.querySelector<HTMLInputElement>('[data-douyin-music]')!
   const douyinCoverInput = root.querySelector<HTMLInputElement>('[data-douyin-cover]')!
+  const douyinAvatarInput = root.querySelector<HTMLInputElement>('[data-douyin-avatar]')!
   const douyinMetadataInput = root.querySelector<HTMLInputElement>('[data-douyin-metadata]')!
   const douyinFolderInput = root.querySelector<HTMLInputElement>('[data-douyin-folder]')!
+  const douyinH264Input = root.querySelector<HTMLInputElement>('[data-douyin-h264]')!
   const authList = root.querySelector<HTMLElement>('[data-download-auth-list]')!
+  const historyRefresh = root.querySelector<HTMLButtonElement>('[data-download-history-refresh]')!
+  const historyList = root.querySelector<HTMLElement>('[data-download-history-list]')!
   const queueRoot = root.querySelector<HTMLElement>('[data-download-queue]')!
   const selectedCount = root.querySelector<HTMLElement>('[data-download-selected-count]')!
   const selectAllButton = root.querySelector<HTMLButtonElement>('[data-download-select-all]')!
@@ -269,27 +306,29 @@ export function setupDownload(root: HTMLDivElement): () => void {
   const cancelButton = root.querySelector<HTMLButtonElement>('[data-download-cancel]')!
   const feedback = root.querySelector<HTMLElement>('[data-download-feedback]')!
   const subchooserRoot = root.querySelector<HTMLElement>('[data-download-subchooser]')!
+  const subchooserModal = root.querySelector<HTMLElement>('.download-subchooser-modal')!
   const subchooserCount = root.querySelector<HTMLElement>('[data-download-subchooser-count]')!
   const subchooserDescription = root.querySelector<HTMLElement>('[data-download-subchooser-description]')!
   const subchooserList = root.querySelector<HTMLElement>('[data-download-subchooser-list]')!
   const subchooserClose = root.querySelector<HTMLButtonElement>('[data-download-subchooser-close]')!
 
-  if (!runtimeRoot || !urlsInput || !probeButton || !folderButton || !folderValue || !kindInput || !resolutionInput || !resolutionField || !audioFormatInput || !audioFormatField || !folderModeInput || !advancedDetails || !containerInput || !templateInput || !subsInput || !autoSubsInput || !embedSubsInput || !thumbnailInput || !metadataInput || !archiveInput || !overwriteInput || !proxyInput || !proxyTestButton || !proxyFeedback || !douyinModeInput || !douyinBatchInput || !douyinMusicInput || !douyinCoverInput || !douyinMetadataInput || !douyinFolderInput || !authList || !queueRoot || !selectedCount || !selectAllButton || !clearButton || !startButton || !cancelButton || !feedback || !subchooserRoot || !subchooserCount || !subchooserDescription || !subchooserList || !subchooserClose) return () => {}
+  if (!runtimeRoot || !urlsInput || !probeButton || !folderButton || !folderValue || !kindInput || !resolutionInput || !resolutionField || !audioFormatInput || !audioFormatField || !folderModeInput || !advancedDetails || !containerInput || !templateInput || !subsInput || !autoSubsInput || !embedSubsInput || !thumbnailInput || !metadataInput || !h264Input || !archiveInput || !overwriteInput || !proxyInput || !proxyTestButton || !proxyFeedback || !douyinModeInput || !douyinBatchInput || !douyinMusicInput || !douyinCoverInput || !douyinAvatarInput || !douyinMetadataInput || !douyinFolderInput || !douyinH264Input || !authList || !historyRefresh || !historyList || !queueRoot || !selectedCount || !selectAllButton || !clearButton || !startButton || !cancelButton || !feedback || !subchooserRoot || !subchooserModal || !subchooserCount || !subchooserDescription || !subchooserList || !subchooserClose) return () => {}
 
   let disposed = false
   let outputDir = readStored('promedia.download.outputDir')
   let runtimeReady = false
+  let runtimeRefreshVersion = 0
   let probing = false
   let installing = false
   let activeOperationId: string | null = null
   let authStatuses: DownloadAuthStatus[] = []
+  let channelHistory: DownloadChannelRecord[] = []
   let pendingCollections: PendingProbeCollection[] = []
+  let subchooserOpener: HTMLElement | null = null
   const useCookies = new Map<DownloadAuthSite, boolean>(authSites.map((site) => [site, readBoolean(`promedia.download.cookies.${site}`)]))
   const queue: QueueItem[] = []
-  const progressListener = window.promedia.downloads.onProgress((progress) => {
-    const item = queue.find((candidate) => candidate.operationId === progress.operationId)
-    if (!item) return
-    item.progress = progress
+  const operationListener = window.promedia.downloads.onOperation((status) => {
+    applyOperationStatus(status)
     renderQueue()
   })
   const authEventListener = window.promedia.downloads.auth.onEvent((event) => {
@@ -312,12 +351,16 @@ export function setupDownload(root: HTMLDivElement): () => void {
     : 'flat'
   restoreDownloadControls()
   syncKindControls()
+  syncPlatformControls()
   autoSubsInput.disabled = !subsInput.checked
   embedSubsInput.disabled = !subsInput.checked
   renderAuth()
+  renderHistory()
   renderQueue()
   void refreshRuntime()
   void refreshAuth()
+  void refreshHistory()
+  void hydrateBackgroundOperations()
 
   const handleKindChange = (): void => {
     syncKindControls()
@@ -331,6 +374,10 @@ export function setupDownload(root: HTMLDivElement): () => void {
   const handlePersistedControlChange = (): void => {
     persistControls()
   }
+  const handleURLsInput = (): void => {
+    syncPlatformControls()
+    void refreshRuntime()
+  }
   const persistedChangeInputs: readonly (HTMLInputElement | HTMLSelectElement)[] = [
     resolutionInput,
     audioFormatInput,
@@ -340,14 +387,17 @@ export function setupDownload(root: HTMLDivElement): () => void {
     embedSubsInput,
     thumbnailInput,
     metadataInput,
+    h264Input,
     archiveInput,
     overwriteInput,
     douyinModeInput,
     douyinBatchInput,
     douyinMusicInput,
     douyinCoverInput,
+    douyinAvatarInput,
     douyinMetadataInput,
     douyinFolderInput,
+    douyinH264Input,
   ]
   const handleFolder = async (): Promise<void> => {
     const selected = await window.promedia.dialog.chooseDirectory()
@@ -387,6 +437,7 @@ export function setupDownload(root: HTMLDivElement): () => void {
   const renderSubChooser = (): void => {
     const open = pendingCollections.length > 0
     subchooserRoot.hidden = !open
+    if (open) queueMicrotask(() => subchooserModal.focus())
     subchooserCount.textContent = open
       ? t('downloads.subchooserCount', { count: pendingCollections.length })
       : ''
@@ -416,6 +467,8 @@ export function setupDownload(root: HTMLDivElement): () => void {
     if (probing) return
     pendingCollections = []
     renderSubChooser()
+    subchooserOpener?.focus()
+    subchooserOpener = null
   }
 
   const openSubCollection = async (collection: PendingProbeCollection): Promise<void> => {
@@ -441,6 +494,7 @@ export function setupDownload(root: HTMLDivElement): () => void {
       if (result.candidates.length === 0 && result.collections.length === 0) {
         setFeedback(t('downloads.analysisFailed'))
       }
+      if (result.operationId) void window.promedia.downloads.dismiss(result.operationId)
       renderQueue()
       renderSubChooser()
     } catch {
@@ -460,19 +514,26 @@ export function setupDownload(root: HTMLDivElement): () => void {
       setFeedback(t('downloads.error.invalidUrl'))
       return
     }
+    setFeedback('')
+    subchooserOpener = probeButton
     probing = true
     pendingCollections = []
     renderSubChooser()
     probeButton.disabled = true
     probeButton.textContent = t('downloads.probing')
+    const failedURLs: string[] = []
     try {
-      for (const url of urls) {
+      const results = await Promise.all(urls.map(async (url) => {
         const site = authSiteForURL(url)
         const result = await window.promedia.downloads.probe({
           url,
           useCookies: site ? useCookies.get(site) ?? false : false,
         })
+        return { url, site, result }
+      }))
+      for (const { url, site, result } of results) {
         if (!result.ok) {
+          failedURLs.push(url)
           setFeedback(errorLabel(result.errorCode ?? 'unknown'))
           continue
         }
@@ -482,9 +543,13 @@ export function setupDownload(root: HTMLDivElement): () => void {
           ...collection,
           useCookies: site ? useCookies.get(site) ?? false : false,
         })))
-        if (result.candidates.length === 0 && result.collections.length === 0) setFeedback(t('downloads.analysisFailed'))
+        if (result.candidates.length === 0 && result.collections.length === 0) {
+          failedURLs.push(url)
+          setFeedback(t('downloads.analysisFailed'))
+        }
+        if (result.operationId) void window.promedia.downloads.dismiss(result.operationId)
       }
-      urlsInput.value = ''
+      urlsInput.value = failedURLs.join('\n')
       renderQueue()
       renderSubChooser()
     } catch {
@@ -501,6 +566,12 @@ export function setupDownload(root: HTMLDivElement): () => void {
     proxyTestButton.disabled = true
     proxyTestButton.textContent = t('downloads.proxyTesting')
     try {
+      const runtimeStatuses = await Promise.all(requiredDownloadRuntimeIDsForProxyTest().map((runtimeId) => window.promedia.runtimes.status({ runtimeId })))
+      if (runtimeStatuses.some((status) => status?.state !== 'ready')) {
+        proxyFeedback.textContent = errorLabel('runtime-missing')
+        proxyFeedback.className = 'download-field-help is-error'
+        return
+      }
       const result = await window.promedia.downloads.testProxy(proxyInput.value.trim())
       proxyFeedback.textContent = result.ok ? t('downloads.proxySuccess') : errorLabel(result.errorCode ?? 'network')
       proxyFeedback.className = `download-field-help ${result.ok ? 'is-success' : 'is-error'}`
@@ -517,7 +588,15 @@ export function setupDownload(root: HTMLDivElement): () => void {
     const remove = event.target.closest<HTMLButtonElement>('[data-download-remove]')
     if (remove) {
       const item = queue.find((candidate) => candidate.id === remove.dataset.downloadRemove)
-      if (item && item.state !== 'downloading') queue.splice(queue.indexOf(item), 1)
+      if (!item) return
+      if (item.state === 'ready') {
+        queue.splice(queue.indexOf(item), 1)
+      } else if (item.state === 'fetching' || item.state === 'downloading') {
+        if (item.operationId) window.promedia.downloads.cancel(item.operationId)
+      } else {
+        if (item.operationId) void window.promedia.downloads.dismiss(item.operationId)
+        queue.splice(queue.indexOf(item), 1)
+      }
       renderQueue()
     }
   }
@@ -530,16 +609,36 @@ export function setupDownload(root: HTMLDivElement): () => void {
   }
   const handleSelectAll = (): void => {
     const next = queue.some((item) => !item.selected)
-    queue.forEach((item) => { if (item.state !== 'downloading') item.selected = next })
+    queue.forEach((item) => { if (item.state === 'ready' || item.state === 'error' || item.state === 'skipped' || item.state === 'cancelled') item.selected = next })
     renderQueue()
   }
   const handleClear = (): void => {
-    if (!activeOperationId) queue.splice(0, queue.length)
+    for (const item of [...queue]) {
+      if (item.state === 'fetching' || item.state === 'downloading') continue
+      if (item.operationId) void window.promedia.downloads.dismiss(item.operationId)
+      queue.splice(queue.indexOf(item), 1)
+    }
     renderQueue()
   }
+  const handleHistoryRefresh = (): void => { void refreshHistory() }
   const handleStart = (): void => { void startQueue() }
   const handleCancel = (): void => {
     if (activeOperationId) window.promedia.downloads.cancel(activeOperationId)
+  }
+  const handleSubChooserKeydown = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape' && !subchooserRoot.hidden) closeSubChooser()
+    if (event.key !== 'Tab' || subchooserRoot.hidden) return
+    const focusable = [...subchooserModal.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+    if (focusable.length === 0) return
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first.focus()
+    }
   }
   const handleAuthClick = (event: Event): void => {
     if (!(event.target instanceof Element)) return
@@ -576,21 +675,22 @@ export function setupDownload(root: HTMLDivElement): () => void {
   startButton.addEventListener('click', handleStart)
   cancelButton.addEventListener('click', handleCancel)
   subchooserClose.addEventListener('click', closeSubChooser)
+  subchooserRoot.addEventListener('keydown', handleSubChooserKeydown)
   authList.addEventListener('click', handleAuthClick)
   authList.addEventListener('change', handleAuthChange)
+  historyRefresh.addEventListener('click', handleHistoryRefresh)
+  urlsInput.addEventListener('input', handleURLsInput)
 
   async function refreshRuntime(): Promise<void> {
+    const refreshVersion = ++runtimeRefreshVersion
     try {
-      const statuses = await Promise.all([
-        window.promedia.runtimes.status({ runtimeId: 'yt-dlp' }),
-        window.promedia.runtimes.status({ runtimeId: 'media-processing' }),
-        window.promedia.runtimes.status({ runtimeId: 'douyin-engine' }),
-      ])
-      if (disposed) return
-      runtimeReady = statuses.every((status) => status?.state === 'ready')
+      const statuses = await Promise.all(runtimeIDsForProbeInputs().map((runtimeId) => window.promedia.runtimes.status({ runtimeId })))
+      if (disposed || refreshVersion !== runtimeRefreshVersion) return
+      runtimeReady = statuses.length > 0 && statuses.every((status) => status?.state === 'ready')
       renderRuntime()
       renderControls()
     } catch {
+      if (refreshVersion !== runtimeRefreshVersion) return
       runtimeReady = false
       renderRuntimeMessage(t('downloads.runtimeUnavailable'))
       renderControls()
@@ -602,7 +702,7 @@ export function setupDownload(root: HTMLDivElement): () => void {
     installing = true
     renderRuntimeMessage(t('downloads.install'))
     try {
-      for (const runtimeId of ['yt-dlp', 'media-processing', 'douyin-engine']) {
+      for (const runtimeId of runtimeIDsForProbeInputs()) {
         const status = await window.promedia.runtimes.status({ runtimeId })
         if (status?.state === 'ready') continue
         const result = await window.promedia.runtimes.install({ operationId: crypto.randomUUID(), runtimeId })
@@ -627,6 +727,131 @@ export function setupDownload(root: HTMLDivElement): () => void {
     }
   }
 
+  async function refreshHistory(): Promise<void> {
+    try {
+      channelHistory = await window.promedia.downloads.history.list()
+      if (!disposed) renderHistory()
+    } catch {
+      channelHistory = []
+      if (!disposed) renderHistory()
+    }
+  }
+
+  async function hydrateBackgroundOperations(): Promise<void> {
+    try {
+      const operations = await window.promedia.downloads.list()
+      if (disposed) return
+      for (const operation of operations) applyOperationStatus(operation)
+      renderQueue()
+    } catch {
+      // Việc khôi phục trạng thái chỉ là cải thiện UX, không được chặn màn hình tải.
+    }
+  }
+
+  function applyOperationStatus(operation: DownloadOperationStatus): void {
+    if (operation.kind === 'probe') {
+      if (operation.state === 'finished' && operation.probeResult?.ok) {
+        appendCandidates(operation.probeResult.candidates)
+        void window.promedia.downloads.dismiss(operation.operationId)
+      } else if (operation.state === 'error' && !urlsInput.value.split(/\s+/).includes(operation.url)) {
+        urlsInput.value = [urlsInput.value.trim(), operation.url].filter(Boolean).join('\n')
+      }
+      return
+    }
+    const active = operation.state === 'starting' || operation.state === 'running'
+    const resultState: QueueState | null = operation.result?.status === 'done'
+      ? 'done'
+      : operation.result?.status === 'skipped'
+        ? 'skipped'
+        : operation.result?.status === 'cancelled'
+          ? 'cancelled'
+          : operation.result?.status === 'error'
+            ? 'error'
+            : null
+    let item = queue.find((candidate) => candidate.operationId === operation.operationId)
+      ?? queue.find((candidate) => candidate.candidate.url === operation.url && ['fetching', 'ready'].includes(candidate.state))
+    if (!item && (active || resultState)) {
+      const platform = operation.platform ?? platformForURL(operation.url) ?? 'youtube'
+      item = {
+        id: crypto.randomUUID(),
+        candidate: {
+          id: operation.operationId,
+          url: operation.url,
+          title: operation.displayTitle ?? operation.url,
+          platform,
+          uploader: null,
+          durationSeconds: null,
+          durationLabel: null,
+          thumbnailURL: operation.thumbnailURL,
+          webpageURL: operation.url,
+          playlistTitle: null,
+          formats: [],
+          maxHeight: null,
+        },
+        selected: false,
+        state: active ? 'fetching' : resultState!,
+        progress: null,
+        result: null,
+        errorCode: null,
+        operationId: operation.operationId,
+      }
+      queue.push(item)
+    }
+    if (!item) return
+    item.operationId = operation.operationId
+    item.progress = operation.progress
+    item.result = operation.result
+    item.errorCode = operation.result?.errorCode ?? null
+    if (active) {
+      item.state = 'fetching'
+      if (operation.state === 'running') item.state = 'downloading'
+      activeOperationId = operation.operationId
+    } else if (resultState) {
+      item.state = resultState
+      if (activeOperationId === operation.operationId) activeOperationId = null
+    }
+  }
+
+  function runtimeIDsForProbeInputs(): string[] {
+    const platforms = new Set<DownloadPlatform>()
+    for (const value of urlsInput.value.split(/\s+/).map((item) => item.trim()).filter(Boolean)) {
+      const platform = platformForURL(value)
+      if (platform) platforms.add(platform)
+    }
+    if (platforms.size === 0) platforms.add('youtube')
+    const ids = new Set<string>()
+    for (const platform of platforms) for (const runtimeId of requiredDownloadRuntimeIDsForProbe(platform)) ids.add(runtimeId)
+    return [...ids]
+  }
+
+  async function ensureRuntimeForDownload(requests: readonly ReturnType<typeof buildDownloadRequest>[]): Promise<boolean> {
+    if (requests.some((request) => request.engine === 'douyin') && isLinuxDouyinUnsupported()) {
+      setFeedback(t('downloads.douyinUnsupported'))
+      return false
+    }
+    const ids = new Set<string>()
+    for (const request of requests) for (const runtimeId of requiredDownloadRuntimeIDsForDownload(request)) ids.add(runtimeId)
+    if (ids.size === 0) return true
+    installing = true
+    renderRuntimeMessage(t('downloads.install'))
+    try {
+      for (const runtimeId of ids) {
+        const status = await window.promedia.runtimes.status({ runtimeId })
+        if (status?.state === 'ready') continue
+        const result = await window.promedia.runtimes.install({ operationId: crypto.randomUUID(), runtimeId })
+        if (result.status !== 'installed') {
+          setFeedback(t('downloads.runtimeUnavailable'))
+          return false
+        }
+      }
+      runtimeReady = true
+      return true
+    } finally {
+      installing = false
+      await refreshRuntime()
+    }
+  }
+
   async function login(site: DownloadAuthSite): Promise<void> {
     try {
       await window.promedia.downloads.auth.login(site)
@@ -643,80 +868,88 @@ export function setupDownload(root: HTMLDivElement): () => void {
     await refreshAuth()
   }
 
-  async function startQueue(): Promise<void> {
-    if (!runtimeReady || !outputDir || activeOperationId) {
+  async function startQueue(itemsOverride?: readonly QueueItem[]): Promise<void> {
+    if (!outputDir) {
       if (!outputDir) setFeedback(t('downloads.chooseFolder'))
       return
     }
-    const items = queue.filter((item) => item.selected && ['ready', 'error', 'skipped', 'cancelled'].includes(item.state))
+    const items = [...(itemsOverride ?? queue.filter((item) => item.selected && ['ready', 'error', 'skipped', 'cancelled'].includes(item.state)))]
     if (items.length === 0) return
-    for (const item of items) {
-      if (disposed) return
-      const operationId = crypto.randomUUID()
-      activeOperationId = operationId
-      item.operationId = operationId
-      item.state = 'downloading'
+    setFeedback('')
+    const requests = items.map((item) => buildRequest(item))
+    if (!await ensureRuntimeForDownload(requests)) return
+    if (disposed) return
+    const result = await window.promedia.downloads.enqueue(requests)
+    if (result.errorCode || result.acceptedOperationIDs.length !== requests.length) {
+      setFeedback(errorLabel(result.errorCode ?? 'busy'))
+      return
+    }
+    requests.forEach((request, index) => {
+      const item = items[index]
+      item.operationId = request.operationId
+      item.state = 'fetching'
       item.progress = null
       item.errorCode = null
       item.result = null
-      renderQueue()
-      try {
-        const result = await window.promedia.downloads.start({
-          operationId,
-          url: item.candidate.url,
-          playlistTitle: item.candidate.playlistTitle,
-          kind: kindInput.value as DownloadKind,
-          maxHeight: kindInput.value === 'video' ? (resolutionInput.value ? Number(resolutionInput.value) : null) : null,
-          audioFormat: audioFormatInput.value as 'mp3' | 'm4a' | 'opus' | 'flac' | 'wav',
-          outputDir,
-          container: containerInput.value as 'mp4' | 'mkv' | 'webm',
-          outputTemplate: templateInput.value,
-          folderMode: folderModeInput.value as DownloadFolderMode,
-          writeSubtitles: subsInput.checked,
-          autoSubtitles: autoSubsInput.checked,
-          subtitleLanguages: 'vi,en',
-          embedSubtitles: embedSubsInput.checked,
-          embedThumbnail: thumbnailInput.checked,
-          embedMetadata: metadataInput.checked,
-          useArchive: archiveInput.checked,
-          forceOverwrite: overwriteInput.checked,
-          proxy: proxyInput.value.trim() || null,
-          useCookies: useCookies.get(item.candidate.platform) ?? false,
-          douyin: {
-            mode: douyinModeInput.value as 'all' | 'batch' | 'new',
-            batchSize: Math.max(1, Number(douyinBatchInput.value) || 15),
-            music: douyinMusicInput.checked,
-            cover: douyinCoverInput.checked,
-            metadata: douyinMetadataInput.checked,
-            folderPerVideo: douyinFolderInput.checked,
-          },
-        })
-        item.result = result
-        item.errorCode = result.errorCode ?? null
-        item.state = result.status === 'done' ? 'done' : result.status === 'skipped' ? 'skipped' : result.status === 'cancelled' ? 'cancelled' : 'error'
-      } catch {
-        item.state = 'error'
-        item.errorCode = 'unknown'
-      } finally {
-        activeOperationId = null
-        renderQueue()
-      }
+    })
+    renderQueue()
+  }
+
+  function buildRequest(item: QueueItem): ReturnType<typeof buildDownloadRequest> {
+    const site = authSiteForPlatform(item.candidate.platform)
+    const controls: DownloadControlState = {
+      outputDir,
+      useCookies: site ? useCookies.get(site) ?? false : false,
+      proxy: proxyInput.value.trim() || null,
+      ytDlp: {
+        kind: kindInput.value as 'video' | 'audio',
+        maxHeight: kindInput.value === 'video' ? (resolutionInput.value ? Number(resolutionInput.value) : null) : null,
+        audioFormat: audioFormatInput.value as 'mp3' | 'm4a' | 'opus' | 'flac' | 'wav',
+        container: containerInput.value as 'mp4' | 'mkv' | 'webm',
+        ensureH264: h264Input.checked,
+        outputTemplate: templateInput.value,
+        folderMode: folderModeInput.value as DownloadFolderMode,
+        writeSubtitles: subsInput.checked,
+        autoSubtitles: autoSubsInput.checked,
+        subtitleLanguages: 'vi,en',
+        embedSubtitles: embedSubsInput.checked,
+        embedThumbnail: thumbnailInput.checked,
+        embedMetadata: metadataInput.checked,
+        useArchive: archiveInput.checked,
+        forceOverwrite: overwriteInput.checked,
+      },
+      douyin: {
+        mode: douyinModeInput.value as 'all' | 'batch' | 'new',
+        batchSize: Math.max(1, Number(douyinBatchInput.value) || 15),
+        music: douyinMusicInput.checked,
+        cover: douyinCoverInput.checked,
+        avatar: douyinAvatarInput.checked,
+        metadata: douyinMetadataInput.checked,
+        folderPerVideo: douyinFolderInput.checked,
+        ensureH264: douyinH264Input.checked,
+      },
     }
+    return buildDownloadRequest(item.candidate, controls, crypto.randomUUID())
   }
 
   function renderRuntime(): void {
-    runtimeRoot.hidden = runtimeReady
+    const douyinUnsupported = isLinuxDouyinUnsupported() && !douyinOptionGroup.hidden
+    runtimeRoot.hidden = runtimeReady && !douyinUnsupported
     runtimeRoot.replaceChildren()
     const title = document.createElement('strong')
-    title.textContent = runtimeReady ? t('downloads.runtimeReady') : t('downloads.runtimeMissing')
+    title.textContent = douyinUnsupported
+      ? t('downloads.douyinUnsupported')
+      : runtimeReady ? t('downloads.runtimeReady') : t('downloads.runtimeMissing')
     const message = document.createElement('span')
-    message.textContent = runtimeReady ? t('downloads.runtimeReady') : t('downloads.runtimeDescription')
+    message.textContent = douyinUnsupported
+      ? t('downloads.douyinUnsupported')
+      : runtimeReady ? t('downloads.runtimeReady') : t('downloads.runtimeDescription')
     const button = document.createElement('button')
     button.type = 'button'
     button.className = 'download-runtime-button'
     button.textContent = t('downloads.install')
-    button.hidden = runtimeReady
-    button.disabled = installing
+    button.hidden = runtimeReady || douyinUnsupported
+    button.disabled = installing || douyinUnsupported
     button.addEventListener('click', () => { void installRuntime() })
     runtimeRoot.append(title, message, button)
   }
@@ -730,9 +963,9 @@ export function setupDownload(root: HTMLDivElement): () => void {
 
   function renderControls(): void {
     probeButton.disabled = !runtimeReady || probing
-    startButton.disabled = !runtimeReady || !outputDir || Boolean(activeOperationId)
-    clearButton.disabled = Boolean(activeOperationId)
-    folderButton.disabled = Boolean(activeOperationId)
+    startButton.disabled = !outputDir || !queue.some((item) => item.selected && ['ready', 'error', 'skipped', 'cancelled'].includes(item.state))
+    clearButton.disabled = false
+    folderButton.disabled = false
   }
 
   function renderAuth(): void {
@@ -784,6 +1017,7 @@ export function setupDownload(root: HTMLDivElement): () => void {
   function renderQueue(): void {
     const count = queue.filter((item) => item.selected).length
     selectedCount.textContent = t('downloads.selectedCount', { count })
+    syncPlatformControls()
     renderControls()
     if (queue.length === 0) {
       const empty = document.createElement('p')
@@ -795,6 +1029,79 @@ export function setupDownload(root: HTMLDivElement): () => void {
     }
     queueRoot.replaceChildren(...queue.map(queueRow))
     cancelButton.hidden = !activeOperationId
+  }
+
+  function renderHistory(): void {
+    historyList.replaceChildren()
+    if (channelHistory.length === 0) {
+      const empty = document.createElement('span')
+      empty.className = 'download-field-help'
+      empty.textContent = t('downloads.historyEmpty')
+      historyList.append(empty)
+      return
+    }
+    for (const record of channelHistory) {
+      const row = document.createElement('div')
+      row.className = 'download-history-row'
+      const info = document.createElement('div')
+      info.className = 'download-history-info'
+      const name = document.createElement('strong')
+      name.textContent = record.name
+      const meta = document.createElement('span')
+      meta.className = 'download-field-help'
+      meta.textContent = `${record.count} · ${new Date(record.lastRun).toLocaleString()}`
+      info.append(name, meta)
+      const actions = document.createElement('div')
+      actions.className = 'download-action-row download-action-row-compact'
+      const getNew = document.createElement('button')
+      getNew.type = 'button'
+      getNew.className = 'download-link-button'
+      getNew.textContent = t('downloads.historyGetNew')
+      getNew.addEventListener('click', () => {
+        douyinModeInput.value = 'new'
+        outputDir = record.outputDir
+        folderValue.textContent = outputDir
+        writeStored('promedia.download.outputDir', outputDir)
+        const item: QueueItem = {
+          id: crypto.randomUUID(),
+          candidate: {
+            id: record.url,
+            url: record.url,
+            title: record.name,
+            platform: 'douyin',
+            uploader: record.name,
+            durationSeconds: null,
+            durationLabel: null,
+            thumbnailURL: null,
+            webpageURL: record.url,
+            playlistTitle: record.name,
+            formats: [],
+            maxHeight: null,
+          },
+          selected: true,
+          state: 'ready',
+          progress: null,
+          result: null,
+          errorCode: null,
+          operationId: null,
+        }
+        queue.push(item)
+        void startQueue([item])
+      })
+      const remove = document.createElement('button')
+      remove.type = 'button'
+      remove.className = 'download-link-button'
+      remove.textContent = t('downloads.remove')
+      remove.addEventListener('click', () => {
+        void window.promedia.downloads.history.remove(record.url).then((records) => {
+          channelHistory = records
+          renderHistory()
+        })
+      })
+      actions.append(getNew, remove)
+      row.append(info, actions)
+      historyList.append(row)
+    }
   }
 
   function queueRow(item: QueueItem): HTMLElement {
@@ -826,7 +1133,7 @@ export function setupDownload(root: HTMLDivElement): () => void {
           const result = await window.promedia.downloads.thumbnail({
             thumbnailURL: item.candidate.thumbnailURL!,
             sourceURL: item.candidate.webpageURL,
-            useCookies: useCookies.get(item.candidate.platform) ?? false,
+            useCookies: authSiteForPlatform(item.candidate.platform) ? useCookies.get(authSiteForPlatform(item.candidate.platform)!) ?? false : false,
           })
           if (result.dataURL) {
             image.src = result.dataURL
@@ -864,6 +1171,18 @@ export function setupDownload(root: HTMLDivElement): () => void {
       progress.value = item.progress.percent
       body.append(progress)
     }
+    if (item.progress && (item.progress.speed || item.progress.eta || item.progress.filePath)) {
+      const progressMeta = document.createElement('span')
+      progressMeta.className = 'download-queue-meta'
+      progressMeta.textContent = [item.progress.speed, item.progress.eta ? t('downloads.eta', { value: item.progress.eta }) : null, item.progress.filePath].filter(Boolean).join(' · ')
+      body.append(progressMeta)
+    }
+    if (item.progress?.detailCode) {
+      const detail = document.createElement('span')
+      detail.className = 'download-queue-meta'
+      detail.textContent = progressDetailLabel(item.progress.detailCode)
+      body.append(detail)
+    }
     if (item.errorCode) {
       const error = document.createElement('span')
       error.className = 'download-queue-error'
@@ -893,6 +1212,24 @@ export function setupDownload(root: HTMLDivElement): () => void {
     containerInput.disabled = audio
   }
 
+  function syncPlatformControls(): void {
+    const platforms = new Set<DownloadPlatform>()
+    for (const item of queue) if (item.selected) platforms.add(item.candidate.platform)
+    for (const value of urlsInput.value.split(/\s+/).map((item) => item.trim()).filter(Boolean)) {
+      const platform = platformForURL(value)
+      if (platform) platforms.add(platform)
+    }
+    const showDouyin = platforms.has('douyin')
+    const showYtDlp = platforms.size === 0 || [...platforms].some((platform) => platform !== 'douyin')
+    for (const group of ytOptionGroups) group.hidden = !showYtDlp
+    douyinOptionGroup.hidden = !showDouyin
+    renderRuntime()
+  }
+
+  function isLinuxDouyinUnsupported(): boolean {
+    return /Linux/i.test(window.navigator.userAgent)
+  }
+
   function persistControls(): void {
     writeStored('promedia.download.kind', kindInput.value)
     writeStored('promedia.download.resolution', resolutionInput.value)
@@ -906,6 +1243,7 @@ export function setupDownload(root: HTMLDivElement): () => void {
     writeStored('promedia.download.embedSubs', String(embedSubsInput.checked))
     writeStored('promedia.download.thumbnail', String(thumbnailInput.checked))
     writeStored('promedia.download.metadata', String(metadataInput.checked))
+    writeStored('promedia.download.h264', String(h264Input.checked))
     writeStored('promedia.download.archive', String(archiveInput.checked))
     writeStored('promedia.download.overwrite', String(overwriteInput.checked))
     writeStored('promedia.download.proxy', proxyInput.value)
@@ -913,8 +1251,10 @@ export function setupDownload(root: HTMLDivElement): () => void {
     writeStored('promedia.download.douyinBatch', douyinBatchInput.value)
     writeStored('promedia.download.douyinMusic', String(douyinMusicInput.checked))
     writeStored('promedia.download.douyinCover', String(douyinCoverInput.checked))
+    writeStored('promedia.download.douyinAvatar', String(douyinAvatarInput.checked))
     writeStored('promedia.download.douyinMetadata', String(douyinMetadataInput.checked))
     writeStored('promedia.download.douyinFolder', String(douyinFolderInput.checked))
+    writeStored('promedia.download.douyinH264', String(douyinH264Input.checked))
   }
 
   function restoreDownloadControls(): void {
@@ -926,6 +1266,7 @@ export function setupDownload(root: HTMLDivElement): () => void {
     restoreBoolean(embedSubsInput, 'promedia.download.embedSubs')
     restoreBoolean(thumbnailInput, 'promedia.download.thumbnail')
     restoreBoolean(metadataInput, 'promedia.download.metadata')
+    restoreBoolean(h264Input, 'promedia.download.h264')
     restoreBoolean(archiveInput, 'promedia.download.archive')
     restoreBoolean(overwriteInput, 'promedia.download.overwrite')
     restoreValue(proxyInput, 'promedia.download.proxy')
@@ -937,8 +1278,10 @@ export function setupDownload(root: HTMLDivElement): () => void {
     }
     restoreBoolean(douyinMusicInput, 'promedia.download.douyinMusic')
     restoreBoolean(douyinCoverInput, 'promedia.download.douyinCover')
+    restoreBoolean(douyinAvatarInput, 'promedia.download.douyinAvatar')
     restoreBoolean(douyinMetadataInput, 'promedia.download.douyinMetadata')
     restoreBoolean(douyinFolderInput, 'promedia.download.douyinFolder')
+    restoreBoolean(douyinH264Input, 'promedia.download.douyinH264')
   }
 
   function setFeedback(message: string): void {
@@ -947,7 +1290,7 @@ export function setupDownload(root: HTMLDivElement): () => void {
 
   return () => {
     disposed = true
-    progressListener()
+    operationListener()
     authEventListener()
     runtimeProgressListener()
     kindInput.removeEventListener('change', handleKindChange)
@@ -966,12 +1309,37 @@ export function setupDownload(root: HTMLDivElement): () => void {
     startButton.removeEventListener('click', handleStart)
     cancelButton.removeEventListener('click', handleCancel)
     subchooserClose.removeEventListener('click', closeSubChooser)
+    subchooserRoot.removeEventListener('keydown', handleSubChooserKeydown)
     authList.removeEventListener('click', handleAuthClick)
     authList.removeEventListener('change', handleAuthChange)
+    historyRefresh.removeEventListener('click', handleHistoryRefresh)
+    urlsInput.removeEventListener('input', handleURLsInput)
   }
 }
 
 function authSiteForURL(value: string): DownloadAuthSite | null {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase().replace(/^www\./, '')
+    if (hostname === 'douyin.com' || hostname.endsWith('.douyin.com') || hostname === 'iesdouyin.com' || hostname.endsWith('.iesdouyin.com')) return 'douyin'
+    if (hostname === 'facebook.com' || hostname.endsWith('.facebook.com') || hostname === 'fb.watch') return 'facebook'
+    if (hostname === 'tiktok.com' || hostname.endsWith('.tiktok.com')) return 'tiktok'
+  } catch {
+    return null
+  }
+  return null
+}
+
+function platformLabel(platform: DownloadPlatform): string {
+  const keys: Record<DownloadPlatform, 'downloads.platform.facebook' | 'downloads.platform.tiktok' | 'downloads.platform.douyin' | 'downloads.platform.youtube'> = {
+    facebook: 'downloads.platform.facebook',
+    tiktok: 'downloads.platform.tiktok',
+    douyin: 'downloads.platform.douyin',
+    youtube: 'downloads.platform.youtube',
+  }
+  return t(keys[platform])
+}
+
+function platformForURL(value: string): DownloadPlatform | null {
   try {
     const hostname = new URL(value).hostname.toLowerCase().replace(/^www\./, '')
     if (hostname === 'douyin.com' || hostname.endsWith('.douyin.com') || hostname === 'iesdouyin.com' || hostname.endsWith('.iesdouyin.com')) return 'douyin'
@@ -984,14 +1352,8 @@ function authSiteForURL(value: string): DownloadAuthSite | null {
   return null
 }
 
-function platformLabel(platform: DownloadAuthSite): string {
-  const keys: Record<DownloadAuthSite, 'downloads.platform.facebook' | 'downloads.platform.tiktok' | 'downloads.platform.douyin' | 'downloads.platform.youtube'> = {
-    facebook: 'downloads.platform.facebook',
-    tiktok: 'downloads.platform.tiktok',
-    douyin: 'downloads.platform.douyin',
-    youtube: 'downloads.platform.youtube',
-  }
-  return t(keys[platform])
+function authSiteForPlatform(platform: DownloadPlatform): DownloadAuthSite | null {
+  return platform === 'youtube' ? null : platform
 }
 
 function optionLabel(value: string): string {
@@ -1009,6 +1371,23 @@ function queueStateLabel(state: QueueState): string {
     cancelled: 'downloads.queueCancelled',
   }
   return t(keys[state])
+}
+
+function progressDetailLabel(code: DownloadProgressDetailCode): string {
+  const keys: Record<DownloadProgressDetailCode, string> = {
+    preparing: 'downloads.detail.preparing',
+    postprocessing: 'downloads.detail.postprocessing',
+    'retry-without-cookies': 'downloads.detail.retryWithoutCookies',
+    'retry-adaptive': 'downloads.detail.retryAdaptive',
+    'retry-progressive': 'downloads.detail.retryProgressive',
+    'retry-automatic-format': 'downloads.detail.retryAutomaticFormat',
+    'conversion-h264': 'downloads.detail.conversionH264',
+    'conversion-music': 'downloads.detail.conversionMusic',
+    finished: 'downloads.detail.finished',
+    cancelled: 'downloads.detail.cancelled',
+    error: 'downloads.detail.error',
+  }
+  return t(keys[code] as never)
 }
 
 function errorLabel(code: DownloadErrorCode): string {

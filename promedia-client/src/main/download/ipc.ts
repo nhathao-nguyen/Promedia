@@ -1,4 +1,4 @@
-import { ipcMain, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
+import { BrowserWindow, ipcMain, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
 
 import {
   downloadChannels,
@@ -8,124 +8,79 @@ import {
   isDownloadRequest,
   isDownloadThumbnailRequest,
   type DownloadAuthEvent,
-  type DownloadAuthSite,
+  type DownloadEnqueueResult,
   type DownloadOperationStatus,
-  type DownloadProgress,
-  type DownloadResult,
 } from '../../shared/download.ts'
 import { DownloadAuthService } from './auth.ts'
+import { ChannelHistory } from './channel-history.ts'
+import { DownloadJobStore } from './job-store.ts'
 import { downloadErrorCode, DownloadService } from './service.ts'
+import { detectDownloadPlatform } from './sites.ts'
 import type { RuntimeService } from '../runtime/service.ts'
 
-const maximumConcurrentDownloads = 1
-
-interface ActiveDownload {
-  key: string
-  rendererID: number
-  controller: AbortController
-  status: DownloadOperationStatus
-}
-
-export function registerDownloadIPC(runtime: RuntimeService, userDataRoot: string): () => void {
+export function registerDownloadIPC(runtime: RuntimeService, userDataRoot: string): () => Promise<void> {
   const auth = new DownloadAuthService(userDataRoot)
+  const history = new ChannelHistory(userDataRoot)
   const service = new DownloadService(runtime, auth, userDataRoot)
-  const active = new Map<string, ActiveDownload>()
+  const jobs = new DownloadJobStore({
+    probe: async (request, signal) => {
+      try {
+        const result = await service.probe(request, signal)
+        return {
+          ok: true,
+          platform: detectDownloadPlatform(request.url) ?? undefined,
+          ...result,
+        }
+      } catch (error) {
+        return { ok: false, candidates: [], collections: [], errorCode: downloadErrorCode(error) }
+      }
+    },
+    start: async (request, signal, report) => {
+      try {
+        const result = await service.start(request, signal, report)
+        if ((result.status === 'done' || result.status === 'skipped') && isDouyinChannelURL(request.url)) {
+          await history.recordSuccess({
+            url: request.url,
+            name: request.displayTitle?.trim() || request.url,
+            outputDir: request.outputDir,
+            lastMode: request.engine === 'douyin' ? request.options.mode : 'all',
+            addedItemCount: result.addedItemCount,
+          })
+        }
+        return result
+      } catch (error) {
+        return {
+          operationId: request.operationId,
+          status: signal.aborted ? 'cancelled' : 'error',
+          files: [],
+          primaryFile: null,
+          addedItemCount: 0,
+          errorCode: signal.aborted ? 'cancelled' : downloadErrorCode(error),
+        }
+      }
+    },
+  })
+  const unsubscribeJobs = jobs.subscribe((status) => broadcastOperation(status))
 
   const handleProbe = async (_event: IpcMainInvokeEvent, request: unknown) => {
     if (!isDownloadProbeRequest(request)) return { ok: false, candidates: [], collections: [], errorCode: 'invalid-request' as const }
-    const controller = new AbortController()
-    try {
-      const result = await service.probe(request, controller.signal)
-      return { ok: true, ...result }
-    } catch (error) {
-      return { ok: false, candidates: [], collections: [], errorCode: downloadErrorCode(error) }
-    }
+    const operationId = crypto.randomUUID()
+    return { ...(await jobs.probe(operationId, request)), operationId }
   }
 
-  const handleStart = async (event: IpcMainInvokeEvent, request: unknown): Promise<DownloadResult> => {
-    if (!isDownloadRequest(request)) return invalidResult(request)
-    const key = operationKey(event.sender.id, request.operationId)
-    if (active.size >= maximumConcurrentDownloads || active.has(key)) {
-      return { operationId: request.operationId, status: 'error', files: [], primaryFile: null, errorCode: 'busy' }
+  const handleEnqueue = (_event: IpcMainInvokeEvent, value: unknown): DownloadEnqueueResult => {
+    if (!Array.isArray(value) || value.length < 1 || value.length > 100 || !value.every(isDownloadRequest)) {
+      return { acceptedOperationIDs: [], errorCode: 'invalid-request' }
     }
-
-    const controller = new AbortController()
-    const status: DownloadOperationStatus = {
-      operationId: request.operationId,
-      url: request.url,
-      state: 'starting',
-      progress: null,
-      result: null,
-    }
-    const operation: ActiveDownload = { key, rendererID: event.sender.id, controller, status }
-    active.set(key, operation)
-    const onRendererDestroyed = (): void => controller.abort()
-    event.sender.once('destroyed', onRendererDestroyed)
-
-    const report = (progress: DownloadProgress): void => {
-      operation.status.progress = progress
-      operation.status.state = progress.phase === 'error'
-        ? 'error'
-        : progress.phase === 'cancelled'
-          ? 'cancelled'
-          : progress.phase === 'finished'
-            ? 'finished'
-            : 'running'
-      if (event.sender.isDestroyed()) {
-        controller.abort()
-        return
-      }
-      try {
-        event.sender.send(downloadChannels.progress, progress)
-      } catch {
-        controller.abort()
-      }
-    }
-
-    try {
-      const result = await service.start(request, controller.signal, report)
-      operation.status.result = result
-      operation.status.state = result.status === 'cancelled' ? 'cancelled' : result.status === 'error' ? 'error' : 'finished'
-      return result
-    } catch (error) {
-      const errorCode = controller.signal.aborted ? 'cancelled' : downloadErrorCode(error)
-      const result: DownloadResult = {
-        operationId: request.operationId,
-        status: errorCode === 'cancelled' ? 'cancelled' : 'error',
-        files: [],
-        primaryFile: null,
-        errorCode,
-      }
-      operation.status.result = result
-      operation.status.state = result.status === 'cancelled' ? 'cancelled' : 'error'
-      report({
-        operationId: request.operationId,
-        phase: result.status === 'cancelled' ? 'cancelled' : 'error',
-        percent: null,
-        downloadedBytes: null,
-        totalBytes: null,
-        speed: null,
-        eta: null,
-        filePath: null,
-        message: null,
-        errorCode,
-      })
-      return result
-    } finally {
-      event.sender.removeListener('destroyed', onRendererDestroyed)
-      active.delete(key)
-    }
+    return jobs.enqueue(value)
   }
 
-  const handleList = (event: IpcMainInvokeEvent): DownloadOperationStatus[] => (
-    [...active.values()]
-      .filter((operation) => operation.rendererID === event.sender.id)
-      .map((operation) => ({ ...operation.status }))
-  )
-
-  const handleCancel = (event: IpcMainEvent, value: unknown): void => {
-    if (!isDownloadOperationID(value)) return
-    active.get(operationKey(event.sender.id, value))?.controller.abort()
+  const handleList = (): DownloadOperationStatus[] => jobs.list()
+  const handleCancel = (_event: IpcMainEvent, value: unknown): void => {
+    if (isDownloadOperationID(value)) jobs.cancel(value)
+  }
+  const handleDismiss = (_event: IpcMainInvokeEvent, value: unknown): void => {
+    if (isDownloadOperationID(value)) jobs.dismiss(value)
   }
 
   const handleProxyTest = async (_event: IpcMainInvokeEvent, value: unknown) => {
@@ -159,38 +114,62 @@ export function registerDownloadIPC(runtime: RuntimeService, userDataRoot: strin
     if (isDownloadAuthSite(value)) await auth.clear(value)
   }
 
+  const handleHistoryList = (): ReturnType<ChannelHistory['list']> => history.list()
+  const handleHistoryRemove = async (_event: IpcMainInvokeEvent, value: unknown) => {
+    if (typeof value !== 'string' || !isDouyinChannelURL(value)) return []
+    return history.remove(value)
+  }
+
   ipcMain.handle(downloadChannels.probe, handleProbe)
-  ipcMain.handle(downloadChannels.start, handleStart)
+  ipcMain.handle(downloadChannels.enqueue, handleEnqueue)
   ipcMain.handle(downloadChannels.list, handleList)
   ipcMain.on(downloadChannels.cancel, handleCancel)
+  ipcMain.handle(downloadChannels.dismiss, handleDismiss)
   ipcMain.handle(downloadChannels.proxyTest, handleProxyTest)
   ipcMain.handle(downloadChannels.thumbnail, handleThumbnail)
   ipcMain.handle(downloadChannels.authStatus, handleAuthStatus)
   ipcMain.handle(downloadChannels.authLogin, handleAuthLogin)
   ipcMain.handle(downloadChannels.authClear, handleAuthClear)
-  return () => {
+  ipcMain.handle(downloadChannels.historyList, handleHistoryList)
+  ipcMain.handle(downloadChannels.historyRemove, handleHistoryRemove)
+  let disposed = false
+  return async () => {
+    if (disposed) return
+    disposed = true
     ipcMain.removeHandler(downloadChannels.probe)
-    ipcMain.removeHandler(downloadChannels.start)
+    ipcMain.removeHandler(downloadChannels.enqueue)
     ipcMain.removeHandler(downloadChannels.list)
     ipcMain.removeListener(downloadChannels.cancel, handleCancel)
+    ipcMain.removeHandler(downloadChannels.dismiss)
     ipcMain.removeHandler(downloadChannels.proxyTest)
     ipcMain.removeHandler(downloadChannels.thumbnail)
     ipcMain.removeHandler(downloadChannels.authStatus)
     ipcMain.removeHandler(downloadChannels.authLogin)
     ipcMain.removeHandler(downloadChannels.authClear)
-    for (const operation of active.values()) operation.controller.abort()
-    active.clear()
+    ipcMain.removeHandler(downloadChannels.historyList)
+    ipcMain.removeHandler(downloadChannels.historyRemove)
+    unsubscribeJobs()
+    await jobs.dispose()
     auth.dispose()
   }
 }
 
-function operationKey(rendererID: number, operationID: string): string {
-  return `${rendererID}:${operationID}`
+function broadcastOperation(status: DownloadOperationStatus): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed()) continue
+    try {
+      window.webContents.send(downloadChannels.operation, status)
+    } catch {
+      // Cửa sổ có thể vừa đóng trong lúc tiến trình nền đang báo trạng thái.
+    }
+  }
 }
 
-function invalidResult(value: unknown): DownloadResult {
-  const operationId = typeof value === 'object' && value !== null && typeof (value as { operationId?: unknown }).operationId === 'string'
-    ? String((value as { operationId: string }).operationId).slice(0, 128)
-    : ''
-  return { operationId, status: 'error', files: [], primaryFile: null, errorCode: 'invalid-request' }
+function isDouyinChannelURL(value: string): boolean {
+  try {
+    const parsed = new URL(value)
+    return detectDownloadPlatform(value) === 'douyin' && /\/user\//i.test(parsed.pathname)
+  } catch {
+    return false
+  }
 }

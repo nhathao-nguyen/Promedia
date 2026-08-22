@@ -8,6 +8,13 @@ import { runProcess } from './process.ts'
 const mediaRuntimeID = 'media-processing'
 const maximumProcessOutputBytes = 512 * 1_024
 const videoExtensions = new Set(['.avi', '.m4v', '.mkv', '.mov', '.mp4', '.mpeg', '.mpg', '.ts', '.webm'])
+type FileOperations = {
+  rename: typeof rename
+  rm: typeof rm
+  stat: typeof stat
+}
+
+const fileOperations: FileOperations = { rename, rm, stat }
 
 export interface VideoCodecRuntime {
   resolveExecutable(runtimeID: string, logicalName: string, signal: AbortSignal): Promise<string>
@@ -58,7 +65,7 @@ export async function ensureH264Files(
       speed: null,
       eta: null,
       filePath: file,
-      message: 'Đang chuyển video sang H.264 để tương thích phát.',
+      detailCode: 'conversion-h264',
     })
     const converted = await transcodeToH264(ffmpeg, encoder, file, signal)
     await replaceWithConvertedFile(file, converted)
@@ -127,11 +134,46 @@ async function transcodeToH264(
   return temporary
 }
 
-async function replaceWithConvertedFile(original: string, converted: string): Promise<void> {
+export async function replaceWithConvertedFile(
+  original: string,
+  converted: string,
+  operations: FileOperations = fileOperations,
+): Promise<void> {
   const output = outputPathFor(original)
-  if (output !== original) await rm(output, { force: true }).catch(() => undefined)
-  await rm(original, { force: true })
-  await rename(converted, output)
+  const originalBackup = `${original}.${randomUUID()}.bak`
+  const outputBackup = output === original ? null : `${output}.${randomUUID()}.bak`
+  await assertNonEmptyFile(converted, operations)
+
+  const originalWasPresent = await pathExistsAny(original, operations)
+  if (!originalWasPresent) throw new Error('Original media file is missing')
+  const outputWasPresent = outputBackup !== null && await pathExistsAny(output, operations)
+  let originalMoved = false
+  let outputMoved = false
+  let convertedMoved = false
+
+  try {
+    await operations.rename(original, originalBackup)
+    originalMoved = true
+    if (outputBackup && outputWasPresent) {
+      await operations.rename(output, outputBackup)
+      outputMoved = true
+    }
+    await operations.rename(converted, output)
+    convertedMoved = true
+    await assertNonEmptyFile(output, operations)
+  } catch (error) {
+    // Chỉ xóa output mới đã được cài; target cũ phải được giữ nguyên nếu bước backup thất bại.
+    if (convertedMoved) await operations.rm(output, { force: true }).catch(() => undefined)
+    if (outputMoved && outputBackup) await operations.rename(outputBackup, output).catch(() => undefined)
+    if (originalMoved) await operations.rename(originalBackup, original).catch(() => undefined)
+    await operations.rm(converted, { force: true }).catch(() => undefined)
+    throw error
+  }
+
+  let cleanupError: unknown = null
+  await operations.rm(originalBackup, { force: true }).catch((error) => { cleanupError ??= error })
+  if (outputBackup) await operations.rm(outputBackup, { force: true }).catch((error) => { cleanupError ??= error })
+  if (cleanupError) throw cleanupError
 }
 
 function outputPathFor(file: string): string {
@@ -148,6 +190,20 @@ async function pathExists(file: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+async function pathExistsAny(file: string, operations: FileOperations = fileOperations): Promise<boolean> {
+  try {
+    await operations.stat(file)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function assertNonEmptyFile(file: string, operations: FileOperations = fileOperations): Promise<void> {
+  const details = await operations.stat(file).catch(() => null)
+  if (!details?.isFile() || details.size <= 0) throw new Error('Converted media file is missing or empty')
 }
 
 function cancellationError(): DOMException {

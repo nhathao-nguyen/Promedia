@@ -10,6 +10,7 @@
 **/node_modules/
 **/out/
 **/release/
+**/docs
 
 # Operating system files
 .DS_Store

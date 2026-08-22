@@ -52,11 +52,15 @@ app.whenReady().then(() => {
   const disposeRuntimeIPC = registerRuntimeIPC(runtimeService)
   const disposeDownloadIPC = registerDownloadIPC(runtimeService, app.getPath('userData'))
   const disposeDialogIPC = registerDialogIPC()
-  app.once('before-quit', () => {
+  let quitting = false
+  app.once('before-quit', (event) => {
+    if (quitting) return
+    quitting = true
+    event.preventDefault()
     disposeDialogIPC()
-    disposeDownloadIPC()
     disposeRuntimeIPC()
     disposeServerHealthIPC()
+    void disposeDownloadIPC().finally(() => app.quit())
   })
   createWindow()
 

@@ -21,12 +21,12 @@ import {
   type DownloadAuthEvent,
   type DownloadAuthSite,
   type DownloadAuthStatus,
+  type DownloadChannelRecord,
+  type DownloadEnqueueResult,
   type DownloadOperationStatus,
   type DownloadProbeRequest,
   type DownloadProbeResult,
-  type DownloadProgress,
   type DownloadRequest,
-  type DownloadResult,
   type DownloadProxyTestResult,
   type DownloadThumbnailRequest,
   type DownloadThumbnailResult,
@@ -65,16 +65,21 @@ const api: PromediaAPI = {
   },
   downloads: {
     probe: (request: DownloadProbeRequest): Promise<DownloadProbeResult> => ipcRenderer.invoke(downloadChannels.probe, request),
-    start: (request: DownloadRequest): Promise<DownloadResult> => ipcRenderer.invoke(downloadChannels.start, request),
+    enqueue: (requests: readonly DownloadRequest[]): Promise<DownloadEnqueueResult> => ipcRenderer.invoke(downloadChannels.enqueue, requests),
     list: (): Promise<DownloadOperationStatus[]> => ipcRenderer.invoke(downloadChannels.list),
     cancel: (operationId: string): void => ipcRenderer.send(downloadChannels.cancel, operationId),
-    onProgress: (listener: (progress: DownloadProgress) => void): (() => void) => {
-      const handleProgress = (_event: Electron.IpcRendererEvent, progress: DownloadProgress): void => listener(progress)
-      ipcRenderer.on(downloadChannels.progress, handleProgress)
-      return () => ipcRenderer.removeListener(downloadChannels.progress, handleProgress)
+    dismiss: (operationId: string): Promise<void> => ipcRenderer.invoke(downloadChannels.dismiss, operationId),
+    onOperation: (listener: (status: DownloadOperationStatus) => void): (() => void) => {
+      const handleOperation = (_event: Electron.IpcRendererEvent, status: DownloadOperationStatus): void => listener(status)
+      ipcRenderer.on(downloadChannels.operation, handleOperation)
+      return () => ipcRenderer.removeListener(downloadChannels.operation, handleOperation)
     },
     testProxy: (proxy: string): Promise<DownloadProxyTestResult> => ipcRenderer.invoke(downloadChannels.proxyTest, proxy),
     thumbnail: (request: DownloadThumbnailRequest): Promise<DownloadThumbnailResult> => ipcRenderer.invoke(downloadChannels.thumbnail, request),
+    history: {
+      list: (): Promise<DownloadChannelRecord[]> => ipcRenderer.invoke(downloadChannels.historyList),
+      remove: (url: string): Promise<DownloadChannelRecord[]> => ipcRenderer.invoke(downloadChannels.historyRemove, url),
+    },
     auth: {
       status: (): Promise<DownloadAuthStatus[]> => ipcRenderer.invoke(downloadChannels.authStatus),
       login: (site: DownloadAuthSite): Promise<DownloadAuthStatus> => ipcRenderer.invoke(downloadChannels.authLogin, site),

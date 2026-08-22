@@ -5,7 +5,7 @@ import type {
   DownloadCandidate,
   DownloadErrorCode,
   DownloadProgress,
-  DownloadRequest,
+  DouyinDownloadRequest as SharedDouyinDownloadRequest,
   DownloadResult,
 } from '../../shared/download.ts'
 import { probeDouyinURL } from './douyin-api.ts'
@@ -18,16 +18,22 @@ const executableName = 'douyin-engine'
 const maximumEngineOutputBytes = 4 * 1_024 * 1_024
 
 export interface DouyinDownloadRequest {
-  request: DownloadRequest
+  request: SharedDouyinDownloadRequest
   cookies: Readonly<Record<string, string>>
   databasePath: string
 }
 
 export class DouyinDownloadEngine {
+  private readonly runtime: DownloadEngineRuntime
+  private readonly userDataRoot: string
+
   constructor(
-    private readonly runtime: DownloadEngineRuntime,
-    private readonly userDataRoot: string,
-  ) {}
+    runtime: DownloadEngineRuntime,
+    userDataRoot: string,
+  ) {
+    this.runtime = runtime
+    this.userDataRoot = userDataRoot
+  }
 
   async probe(
     url: string,
@@ -48,24 +54,22 @@ export class DouyinDownloadEngine {
     const configPath = join(scratchDirectory, 'config.json')
     const manifestPath = join(input.request.outputDir, 'download_manifest.jsonl')
     const manifestOffset = await fileSize(manifestPath)
-    await writeFile(configPath, JSON.stringify(buildConfig(input), null, 2), 'utf8')
+    await writeFile(configPath, JSON.stringify(buildDouyinConfig(input), null, 2), 'utf8')
 
-    let downloaded = 0
     let skipped = 0
     const handleLine = (line: string): void => {
       const value = line.trim()
       if (!value) return
       const downloadedMatch = /Downloaded (?:video|image|媒体)?:?\s*(.+?)\s*\(\d+\)\s*$/i.exec(value)
       if (downloadedMatch) {
-        downloaded += 1
-        report(progressFor(input.request.operationId, 'downloading', downloadedMatch[1]))
+        report(progressFor(input.request.operationId, 'downloading', null))
         return
       }
       const skippedMatch = /Skipped\s*[│|]\s*(\d+)/i.exec(value)
       if (skippedMatch) skipped = Number(skippedMatch[1]) || skipped
     }
 
-    report(progressFor(input.request.operationId, 'preparing', null))
+    report(progressFor(input.request.operationId, 'preparing', 'preparing'))
     try {
       const process = await runProcess(
         command,
@@ -77,49 +81,65 @@ export class DouyinDownloadEngine {
       if (process.aborted) return cancelledResult(input.request.operationId)
       if (process.code !== 0) {
         const errorCode = classifyDownloadError(process.stderr || process.stdout)
-        report(progressFor(input.request.operationId, 'error', null, errorCode))
+        report(progressFor(input.request.operationId, 'error', 'error', errorCode))
         return {
           operationId: input.request.operationId,
           status: 'error',
           files: [],
           primaryFile: null,
+          addedItemCount: 0,
           errorCode,
         }
       }
 
-      let files = await readManifestFiles(manifestPath, manifestOffset, input.request.outputDir)
-      if (downloaded > 0 && files.length === 0) {
-        report(progressFor(input.request.operationId, 'error', null, 'output-failed'))
+      const delta = await readManifestDelta(manifestPath, manifestOffset, input.request.outputDir)
+      let files = [...delta.files]
+      if (delta.addedItemCount === 0 && skipped === 0) {
+        report(progressFor(input.request.operationId, 'error', 'error', 'output-failed'))
         return {
           operationId: input.request.operationId,
           status: 'error',
           files: [],
           primaryFile: null,
+          addedItemCount: 0,
           errorCode: 'output-failed',
         }
       }
-      if (downloaded > 0 && files.length > 0 && input.request.ensureH264 === true) {
+      if (delta.addedItemCount > 0 && files.length === 0) {
+        report(progressFor(input.request.operationId, 'error', 'error', 'output-failed'))
+        return {
+          operationId: input.request.operationId,
+          status: 'error',
+          files: [],
+          primaryFile: null,
+          addedItemCount: 0,
+          errorCode: 'output-failed',
+        }
+      }
+      if (delta.addedItemCount > 0 && files.length > 0 && input.request.options.ensureH264) {
         try {
           files = [...await ensureH264Files(this.runtime, input.request.operationId, files, signal, report)]
         } catch (error) {
           if (error instanceof DOMException && error.name === 'AbortError') throw error
-          report(progressFor(input.request.operationId, 'error', null, 'output-failed'))
+          report(progressFor(input.request.operationId, 'error', 'error', 'output-failed'))
           return {
             operationId: input.request.operationId,
             status: 'error',
             files,
             primaryFile: primaryVideoFile(files),
+            addedItemCount: 0,
             errorCode: 'output-failed',
           }
         }
       }
-      const status = downloaded === 0 && skipped > 0 ? 'skipped' : 'done'
-      report(progressFor(input.request.operationId, 'finished', null))
+      const status = delta.addedItemCount === 0 && skipped > 0 ? 'skipped' : 'done'
+      report(progressFor(input.request.operationId, 'finished', 'finished'))
       return {
         operationId: input.request.operationId,
         status,
         files,
         primaryFile: primaryVideoFile(files),
+        addedItemCount: delta.addedItemCount,
       }
     } finally {
       await rm(scratchDirectory, { force: true, recursive: true }).catch(() => undefined)
@@ -127,22 +147,22 @@ export class DouyinDownloadEngine {
   }
 }
 
-function buildConfig(input: DouyinDownloadRequest): object {
+export function buildDouyinConfig(input: DouyinDownloadRequest): object {
   const { request } = input
   const isChannel = /\/user\//i.test(request.url)
   const number = { post: 0 }
   const increase = { post: false }
-  if (isChannel && request.douyin.mode === 'batch') number.post = Math.max(1, request.douyin.batchSize)
-  if (isChannel && request.douyin.mode === 'new') increase.post = true
+  if (isChannel && request.options.mode === 'batch') number.post = Math.max(1, request.options.batchSize)
+  if (isChannel && request.options.mode === 'new') increase.post = true
 
   return {
     link: [request.url],
     path: request.outputDir.replace(/[\\/]+$/, '').replace(/\\/g, '/') + '/',
-    music: request.douyin.music || request.kind === 'audio',
-    cover: request.douyin.cover,
-    avatar: request.douyin.avatar === true,
-    json: request.douyin.metadata,
-    folderstyle: request.douyin.folderPerVideo,
+    music: request.options.music,
+    cover: request.options.cover,
+    avatar: request.options.avatar,
+    json: request.options.metadata,
+    folderstyle: request.options.folderPerVideo,
     mode: ['post'],
     number,
     increase,
@@ -151,6 +171,8 @@ function buildConfig(input: DouyinDownloadRequest): object {
     proxy: request.proxy || '',
     database: true,
     database_path: input.databasePath.replace(/\\/g, '/'),
+    // Runtime desktop hiện không kèm browser fallback; tắt để không treo chờ CAPTCHA.
+    // Khi bổ sung browser runtime riêng, đây là boundary cần bật lại với timeout hữu hạn.
     browser_fallback: { enabled: false },
     progress: { quiet_logs: true },
     cookies: input.cookies,
@@ -160,7 +182,7 @@ function buildConfig(input: DouyinDownloadRequest): object {
 function progressFor(
   operationId: string,
   phase: DownloadProgress['phase'],
-  message: string | null,
+  detailCode: DownloadProgress['detailCode'],
   errorCode?: DownloadErrorCode,
 ): DownloadProgress {
   return {
@@ -172,13 +194,13 @@ function progressFor(
     speed: null,
     eta: null,
     filePath: null,
-    message,
+    detailCode,
     errorCode,
   }
 }
 
 function cancelledResult(operationId: string): DownloadResult {
-  return { operationId, status: 'cancelled', files: [], primaryFile: null, errorCode: 'cancelled' }
+  return { operationId, status: 'cancelled', files: [], primaryFile: null, addedItemCount: 0, errorCode: 'cancelled' }
 }
 
 function primaryVideoFile(files: readonly string[]): string | null {
@@ -193,14 +215,15 @@ async function fileSize(path: string): Promise<number> {
   }
 }
 
-async function readManifestFiles(path: string, offset: number, outputDir: string): Promise<string[]> {
+export async function readManifestDelta(path: string, offset: number, outputDir: string): Promise<{ files: readonly string[]; addedItemCount: number }> {
   try {
     const document = await readFile(path)
     const root = resolve(outputDir)
     const realRoot = await realpath(root).catch(() => null)
-    if (!realRoot) return []
+    if (!realRoot) return { files: [], addedItemCount: 0 }
     const start = Math.min(Math.max(0, offset), document.length)
     const files = new Set<string>()
+    const identities = new Set<string>()
     for (const line of document.subarray(start).toString('utf8').split(/\r?\n/)) {
       if (!line.trim()) continue
       let record: unknown
@@ -209,8 +232,13 @@ async function readManifestFiles(path: string, offset: number, outputDir: string
       } catch {
         continue
       }
-      if (!isRecord(record) || !Array.isArray(record.file_paths)) continue
-      for (const value of record.file_paths) {
+      if (!isRecord(record)) continue
+      const names = Array.isArray(record.file_names)
+        ? record.file_names
+        : Array.isArray(record.file_paths) ? record.file_paths : []
+      if (names.length === 0) continue
+      const validRecordFiles: string[] = []
+      for (const value of names) {
         if (typeof value !== 'string' || !value || value.includes('\0')) continue
         const file = isAbsolute(value) ? resolve(value) : resolve(outputDir, value)
         const relativePath = relative(root, file)
@@ -226,14 +254,27 @@ async function readManifestFiles(path: string, offset: number, outputDir: string
         if (!realRelativePath || realRelativePath === '..' || realRelativePath.startsWith(`..${sep}`) || isAbsolute(realRelativePath)) continue
         if (!details.isFile() || details.size <= 0) continue
         files.add(file)
+        validRecordFiles.push(file)
+      }
+      if (validRecordFiles.length > 0) {
+        const identity = stringValue(record.aweme_id)
+          ?? stringValue(record.item_id)
+          ?? stringValue(record.id)
+          ?? stringValue(record.url)
+          ?? validRecordFiles[0]
+        identities.add(identity)
       }
     }
-    return [...files]
+    return { files: [...files], addedItemCount: identities.size }
   } catch {
-    return []
+    return { files: [], addedItemCount: 0 }
   }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
 }

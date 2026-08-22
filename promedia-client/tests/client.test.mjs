@@ -4,7 +4,7 @@ import { test } from 'node:test'
 
 import { requestServerHealth } from '../src/main/server-health.ts'
 import { validateArchiveEntries } from '../src/main/runtime/archive.ts'
-import { parseAssetDigest, parseChecksum, selectReleaseArtifact } from '../src/main/runtime/catalog.ts'
+import { findRuntime, parseAssetDigest, parseChecksum, selectReleaseArtifact } from '../src/main/runtime/catalog.ts'
 import {
   runtimeInstallFailureCode,
   RuntimeInstallError,
@@ -19,9 +19,26 @@ import {
   isRuntimeStatusRequest,
 } from '../src/shared/runtime.ts'
 import { detectDownloadPlatform, isSupportedDownloadURL } from '../src/main/download/sites.ts'
-import { parseCandidates, parseProbeCollections } from '../src/main/download/engine.ts'
-import { parseDouyinAweme, probeDouyinURL } from '../src/main/download/douyin-api.ts'
-import { isDownloadProbeRequest, isDownloadRequest, isDownloadThumbnailRequest } from '../src/shared/download.ts'
+import { buildDownloadFormatSelector, parseCandidates, parseProbeCollections } from '../src/main/download/engine.ts'
+import { parseDouyinAweme, parseDouyinPageMetadata, probeDouyinURL } from '../src/main/download/douyin-api.ts'
+import { buildDouyinConfig, readManifestDelta } from '../src/main/download/douyin-engine.ts'
+import { DownloadJobStore } from '../src/main/download/job-store.ts'
+import { ChannelHistory } from '../src/main/download/channel-history.ts'
+import { replaceWithConvertedFile } from '../src/main/download/codec.ts'
+import { buildDownloadRequest } from '../src/renderer/src/pages/download/request.ts'
+import { mkdtemp, readFile, readdir, rename as realRename, rm, stat as realStat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  downloadAuthSites,
+  isDownloadAuthSite,
+  isDownloadProbeRequest,
+  isDownloadRequest,
+  isDownloadThumbnailRequest,
+  requiredDownloadRuntimeIDsForDownload,
+  requiredDownloadRuntimeIDsForProbe,
+  requiredDownloadRuntimeIDsForProxyTest,
+} from '../src/shared/download.ts'
 
 class MemoryStorage {
   #values = new Map()
@@ -32,6 +49,62 @@ class MemoryStorage {
 
   setItem(key, value) {
     this.#values.set(key, value)
+  }
+}
+
+function testCandidate(platform) {
+  return {
+    id: `${platform}-1`,
+    url: platform === 'douyin'
+      ? 'https://www.douyin.com/video/1'
+      : `https://www.${platform}.com/video/1`,
+    title: `${platform} title`,
+    platform,
+    uploader: 'creator',
+    durationSeconds: 12,
+    durationLabel: '0:12',
+    thumbnailURL: 'https://example.com/thumb.jpg',
+    webpageURL: platform === 'douyin'
+      ? 'https://www.douyin.com/video/1'
+      : `https://www.${platform}.com/video/1`,
+    playlistTitle: 'Collection',
+    formats: [],
+    maxHeight: 1080,
+  }
+}
+
+function testControls() {
+  return {
+    outputDir: 'C:\\Videos',
+    useCookies: true,
+    proxy: 'http://127.0.0.1:8080',
+    ytDlp: {
+      kind: 'video',
+      maxHeight: 1080,
+      audioFormat: 'mp3',
+      container: 'mp4',
+      ensureH264: true,
+      outputTemplate: '%(title)s.%(ext)s',
+      folderMode: 'playlist',
+      writeSubtitles: true,
+      autoSubtitles: false,
+      subtitleLanguages: 'vi,en',
+      embedSubtitles: false,
+      embedThumbnail: true,
+      embedMetadata: true,
+      useArchive: true,
+      forceOverwrite: false,
+    },
+    douyin: {
+      mode: 'batch',
+      batchSize: 15,
+      music: true,
+      cover: true,
+      avatar: true,
+      metadata: true,
+      folderPerVideo: true,
+      ensureH264: true,
+    },
   }
 }
 
@@ -144,6 +217,61 @@ test('download platform routing accepts only the four requested hosts', () => {
   assert.equal(isSupportedDownloadURL('file:///tmp/video.mp4'), false)
 })
 
+test('Douyin catalog is fail-closed on Linux until a platform entry exists', () => {
+  const douyin = findRuntime('douyin-engine')
+  assert.ok(douyin)
+  assert.equal(douyin.platforms['linux-x64'], undefined)
+  assert.equal(douyin.platforms['win32-x64'] !== undefined, true)
+})
+
+test('download auth is limited to Facebook, TikTok, and Douyin', () => {
+  assert.deepEqual(downloadAuthSites, ['facebook', 'tiktok', 'douyin'])
+  assert.equal(isDownloadAuthSite('facebook'), true)
+  assert.equal(isDownloadAuthSite('tiktok'), true)
+  assert.equal(isDownloadAuthSite('douyin'), true)
+  assert.equal(isDownloadAuthSite('youtube'), false)
+})
+
+test('runtime requirements follow the selected action and request', () => {
+  assert.deepEqual(requiredDownloadRuntimeIDsForProbe('youtube'), ['yt-dlp'])
+  assert.deepEqual(requiredDownloadRuntimeIDsForProbe('facebook'), ['yt-dlp'])
+  assert.deepEqual(requiredDownloadRuntimeIDsForProbe('tiktok'), ['yt-dlp'])
+  assert.deepEqual(requiredDownloadRuntimeIDsForProbe('douyin'), ['douyin-engine'])
+  assert.deepEqual(requiredDownloadRuntimeIDsForProxyTest(), ['yt-dlp'])
+
+  const ytRequest = buildDownloadRequest({
+    id: 'yt-1', url: 'https://www.youtube.com/watch?v=yt-1', title: 'YouTube',
+    platform: 'youtube', uploader: null, durationSeconds: null, durationLabel: null,
+    thumbnailURL: null, webpageURL: 'https://www.youtube.com/watch?v=yt-1', playlistTitle: null,
+    formats: [], maxHeight: null,
+  }, testControls(), 'download-yt')
+  const douyinRequest = buildDownloadRequest({
+    id: 'dy-1', url: 'https://www.douyin.com/video/1', title: 'Douyin',
+    platform: 'douyin', uploader: null, durationSeconds: null, durationLabel: null,
+    thumbnailURL: null, webpageURL: 'https://www.douyin.com/video/1', playlistTitle: null,
+    formats: [], maxHeight: null,
+  }, testControls(), 'download-dy')
+  assert.deepEqual(requiredDownloadRuntimeIDsForDownload(ytRequest), ['yt-dlp', 'media-processing'])
+  assert.deepEqual(requiredDownloadRuntimeIDsForDownload(douyinRequest), ['douyin-engine', 'media-processing'])
+})
+
+test('download request builders create engine-specific immutable snapshots', () => {
+  const controls = testControls()
+  const yt = buildDownloadRequest(testCandidate('youtube'), controls, 'download-yt')
+  const douyin = buildDownloadRequest(testCandidate('douyin'), controls, 'download-dy')
+
+  assert.equal(yt.engine, 'yt-dlp')
+  assert.equal(douyin.engine, 'douyin')
+  assert.equal('music' in yt.options, false)
+  assert.equal('subtitleLanguages' in douyin.options, false)
+  assert.equal('avatar' in douyin.options, true)
+
+  controls.ytDlp.outputTemplate = 'changed-after-build'
+  controls.douyin.batchSize = 99
+  assert.equal(yt.options.outputTemplate, '%(title)s.%(ext)s')
+  assert.equal(douyin.options.batchSize, 15)
+})
+
 test('download probe accepts an explicit cookie choice without widening the request', () => {
   assert.equal(isDownloadProbeRequest({ url: 'https://www.douyin.com/user/abc', useCookies: true }), true)
   assert.equal(isDownloadProbeRequest({ url: 'https://www.douyin.com/user/abc', useCookies: false }), true)
@@ -153,7 +281,7 @@ test('download probe accepts an explicit cookie choice without widening the requ
     sourceURL: 'https://www.youtube.com/watch?v=abc12345',
     useCookies: false,
   }), true)
-  assert.equal(isDownloadThumbnailRequest({ thumbnailURL: 'file:///secret', sourceURL: 'https://www.youtube.com/watch?v=abc12345' }), true)
+  assert.equal(isDownloadThumbnailRequest({ thumbnailURL: 'file:///secret', sourceURL: 'https://www.youtube.com/watch?v=abc12345' }), false)
 })
 
 test('Douyin channel parsing returns only video posts with thumbnail metadata', () => {
@@ -258,15 +386,457 @@ test('playlist probing exposes YouTube channel tabs as bounded subcollections', 
 
 
 test('download request validation keeps the IPC shape narrow', () => {
-  assert.equal(isDownloadRequest({
-    operationId: 'download-1',
-    url: 'https://youtu.be/abc',
-    kind: 'video',
+  const valid = buildDownloadRequest(testCandidate('youtube'), testControls(), 'download-1')
+  assert.equal(isDownloadRequest(valid), true)
+  assert.equal(isDownloadRequest({ ...valid, options: { ...valid.options, music: false } }), false)
+  assert.equal(isDownloadRequest({ ...valid, engine: 'douyin' }), false)
+  assert.equal(isDownloadRequest({ ...valid, url: 'http://youtu.be/abc' }), false)
+  assert.equal(isDownloadRequest({ ...valid, operationId: '../bad' }), false)
+  assert.equal(isDownloadRequest({ ...valid, outputDir: 'relative/path' }), false)
+  assert.equal(isDownloadRequest({ ...valid, options: { ...valid.options, outputTemplate: 'nested/../escape' } }), false)
+  assert.equal(isDownloadRequest({ ...valid, displayTitle: 'x'.repeat(501) }), false)
+  assert.equal(isDownloadRequest({ ...valid, outputDir: `C:\\${'x'.repeat(4100)}` }), false)
+  assert.equal(isDownloadRequest({ ...valid, options: { ...valid.options, subtitleLanguages: 'x'.repeat(257) } }), false)
+  assert.equal(isDownloadRequest({ ...valid, options: { ...valid.options, ensureH264: 'yes' } }), false)
+  assert.equal(isDownloadRequest({ ...valid, options: { ...valid.options, container: 'mp3' } }), false)
+  assert.equal(isDownloadRequest({ ...valid, ['unexpected']: true }), false)
+
+  const douyin = buildDownloadRequest(testCandidate('douyin'), testControls(), 'download-dy')
+  assert.equal(isDownloadRequest(douyin), true)
+  assert.equal(isDownloadRequest({ ...douyin, options: { ...douyin.options, kind: 'video' } }), false)
+  assert.equal(isDownloadRequest({ ...douyin, options: { ...douyin.options, metadataEmbedding: true } }), false)
+  assert.equal(isDownloadRequest({ ...douyin, options: { ...douyin.options, batchSize: 0 } }), false)
+  assert.equal(isDownloadRequest({ ...douyin, options: { ...douyin.options, batchSize: 10001 } }), false)
+  assert.equal(isDownloadRequest({ ...douyin, options: { ...douyin.options, batchSize: '15' } }), false)
+})
+
+test('Douyin page metadata preserves a title and cover when the lightweight API is blocked', () => {
+  const metadata = parseDouyinPageMetadata('<meta property="og:title" content="A Douyin post"><meta property="og:image" content="https://p3-sign.douyinpic.com/cover.jpg">')
+  assert.deepEqual(metadata, { title: 'A Douyin post', thumbnailURL: 'https://p3-sign.douyinpic.com/cover.jpg' })
+})
+
+test('download format selection keeps progressive fallback compatible with requested height', () => {
+  assert.equal(buildDownloadFormatSelector({ kind: 'video', maxHeight: 1080 }, 'normal'), 'bestvideo*[height<=1080]+bestaudio/best[height<=1080]/best')
+  assert.equal(buildDownloadFormatSelector({ kind: 'video', maxHeight: 1080 }, 'adaptive'), 'bestvideo*[height<=1080]+bestaudio/best[height<=1080]/best')
+  assert.equal(buildDownloadFormatSelector({ kind: 'video', maxHeight: 720 }, 'progressive'), 'best[height<=720]/best')
+  assert.equal(buildDownloadFormatSelector({ kind: 'video', maxHeight: 720 }, 'format'), 'bestvideo*+bestaudio/best')
+  assert.equal(buildDownloadFormatSelector({ kind: 'audio', maxHeight: null }, 'normal'), 'bestaudio/best')
+})
+
+test('Douyin engine config maps channel mode and media options without hidden defaults', () => {
+  const config = buildDouyinConfig({
+    request: {
+      operationId: 'douyin-1',
+      url: 'https://www.douyin.com/user/creator',
+      displayTitle: 'Creator',
+      thumbnailURL: null,
+      playlistTitle: null,
+      outputDir: 'C:\\Videos',
+      useCookies: false,
+      proxy: null,
+      platform: 'douyin',
+      engine: 'douyin',
+      options: { mode: 'new', batchSize: 20, music: false, cover: true, avatar: false, metadata: true, folderPerVideo: true, ensureH264: false },
+    },
+    cookies: { sessionid: 'redacted-in-test' },
+    databasePath: 'C:\\Promedia\\douyin-library.db',
+  })
+  assert.deepEqual(config.number, { post: 0 })
+  assert.deepEqual(config.increase, { post: true })
+  assert.equal(config.cover, true)
+  assert.equal(config.json, true)
+  assert.equal(config.folderstyle, true)
+  assert.equal(config.database, true)
+})
+
+function deferred() {
+  let resolve
+  const promise = new Promise((release) => { resolve = release })
+  return { promise, resolve }
+}
+
+async function waitFor(predicate) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+  assert.fail('timed out waiting for the expected operation state')
+}
+
+test('background job store admits an atomic FIFO batch with immutable snapshots', async () => {
+  const started = []
+  const gates = new Map()
+  const store = new DownloadJobStore({
+    probe: async () => ({ ok: true, candidates: [], collections: [] }),
+    start: async (request, signal) => {
+      started.push(request.operationId)
+      gates.set(request.operationId, deferred())
+      await gates.get(request.operationId).promise
+      return {
+        operationId: request.operationId,
+        status: signal.aborted ? 'cancelled' : 'done',
+        files: [],
+        primaryFile: null,
+        addedItemCount: signal.aborted ? 0 : 1,
+      }
+    },
+  })
+  const first = buildDownloadRequest(testCandidate('youtube'), testControls(), 'fifo-1')
+  const second = buildDownloadRequest(testCandidate('facebook'), testControls(), 'fifo-2')
+  const accepted = store.enqueue([first, second])
+  assert.deepEqual(accepted, { acceptedOperationIDs: ['fifo-1', 'fifo-2'] })
+  second.options.outputTemplate = 'changed-after-admission'
+  await waitFor(() => started.length === 1)
+  assert.deepEqual(started, ['fifo-1'])
+  const overCapacity = Array.from({ length: 99 }, (_, index) => buildDownloadRequest(testCandidate('tiktok'), testControls(), `fifo-capacity-${index}`))
+  assert.deepEqual(store.enqueue(overCapacity), { acceptedOperationIDs: [], errorCode: 'busy' })
+  assert.equal(store.list().filter((item) => item.operationId.startsWith('fifo-capacity-')).length, 0)
+  gates.get('fifo-1').resolve()
+  await waitFor(() => started.length === 2)
+  assert.deepEqual(started, ['fifo-1', 'fifo-2'])
+  assert.equal(store.list().find((item) => item.operationId === 'fifo-2')?.state, 'running')
+  gates.get('fifo-2').resolve()
+  await waitFor(() => store.list().every((item) => item.state === 'finished'))
+  await store.dispose()
+})
+
+test('background job store cancels queued and active work and dismisses only terminal operations', async () => {
+  const activeGate = deferred()
+  const started = []
+  const store = new DownloadJobStore({
+    probe: async () => ({ ok: true, candidates: [], collections: [] }),
+    start: async (request, signal) => {
+      started.push(request.operationId)
+      if (request.operationId === 'cancel-active') {
+        await activeGate.promise
+      }
+      return {
+        operationId: request.operationId,
+        status: signal.aborted ? 'cancelled' : 'done',
+        files: [],
+        primaryFile: null,
+        addedItemCount: signal.aborted ? 0 : 1,
+      }
+    },
+  })
+  const active = buildDownloadRequest(testCandidate('youtube'), testControls(), 'cancel-active')
+  const queued = buildDownloadRequest(testCandidate('tiktok'), testControls(), 'cancel-queued')
+  store.enqueue([active, queued])
+  await waitFor(() => store.list().find((item) => item.operationId === 'cancel-active')?.state === 'running')
+  assert.equal(store.cancel('cancel-queued'), true)
+  assert.equal(store.cancel('cancel-queued'), false)
+  assert.equal(store.list().find((item) => item.operationId === 'cancel-queued')?.state, 'cancelled')
+  assert.equal(store.dismiss('cancel-active'), false)
+  assert.equal(store.cancel('cancel-active'), true)
+  activeGate.resolve()
+  await waitFor(() => store.list().find((item) => item.operationId === 'cancel-active')?.state === 'cancelled')
+  assert.deepEqual(started, ['cancel-active'])
+  assert.equal(store.dismiss('cancel-active'), true)
+  assert.equal(store.list().some((item) => item.operationId === 'cancel-active'), false)
+  assert.equal(store.dismiss('cancel-active'), false)
+  await store.dispose()
+})
+
+test('background job store survives listener removal and restores operation snapshots', async () => {
+  const gate = deferred()
+  const store = new DownloadJobStore({
+    probe: async () => ({ ok: true, candidates: [], collections: [] }),
+    start: async (request) => {
+      await gate.promise
+      return { operationId: request.operationId, status: 'done', files: [], primaryFile: null, addedItemCount: 1 }
+    },
+  })
+  const events = []
+  const unsubscribe = store.subscribe((status) => events.push(status))
+  store.enqueue([buildDownloadRequest(testCandidate('youtube'), testControls(), 'restore-1')])
+  await waitFor(() => store.list()[0]?.state === 'running')
+  unsubscribe()
+  gate.resolve()
+  await waitFor(() => store.list()[0]?.state === 'finished')
+  const restored = []
+  const removeRestored = store.subscribe((status) => restored.push(status))
+  assert.equal(store.list()[0].state, 'finished')
+  assert.equal(events.some((status) => status.state === 'finished'), false)
+  assert.equal(restored.length, 0)
+  removeRestored()
+  await store.dispose()
+})
+
+test('background job store rejects new work and settles active and queued work on shutdown', async () => {
+  const gate = deferred()
+  const store = new DownloadJobStore({
+    probe: async () => ({ ok: true, candidates: [], collections: [] }),
+    start: async (request, signal) => {
+      await gate.promise
+      return { operationId: request.operationId, status: signal.aborted ? 'cancelled' : 'done', files: [], primaryFile: null, addedItemCount: signal.aborted ? 0 : 1 }
+    },
+  })
+  store.enqueue([
+    buildDownloadRequest(testCandidate('youtube'), testControls(), 'shutdown-1'),
+    buildDownloadRequest(testCandidate('youtube'), testControls(), 'shutdown-2'),
+  ])
+  await waitFor(() => store.list().find((item) => item.operationId === 'shutdown-1')?.state === 'running')
+  const disposing = store.dispose()
+  assert.deepEqual(store.enqueue([buildDownloadRequest(testCandidate('youtube'), testControls(), 'shutdown-3')]), { acceptedOperationIDs: [], errorCode: 'busy' })
+  gate.resolve()
+  await disposing
+  assert.equal(store.list().find((item) => item.operationId === 'shutdown-1')?.state, 'cancelled')
+  assert.equal(store.list().find((item) => item.operationId === 'shutdown-2')?.state, 'cancelled')
+})
+
+test('background job store keeps probe work alive and restores its terminal result', async () => {
+  let releaseProbe
+  const probeGate = new Promise((resolve) => { releaseProbe = resolve })
+  const store = new DownloadJobStore({
+    probe: async () => {
+      await probeGate
+      return {
+        ok: true,
+        platform: 'youtube',
+        candidates: [{
+          id: 'video-1',
+          url: 'https://www.youtube.com/watch?v=video-1',
+          title: 'Video 1',
+          platform: 'youtube',
+          uploader: 'Creator',
+          durationSeconds: 10,
+          durationLabel: '0:10',
+          thumbnailURL: 'https://i.ytimg.com/vi/video-1/hqdefault.jpg',
+          webpageURL: 'https://www.youtube.com/watch?v=video-1',
+          playlistTitle: null,
+          formats: [],
+          maxHeight: 1080,
+        }],
+        collections: [],
+      }
+    },
+    start: async () => ({ operationId: 'unused', status: 'done', files: [], primaryFile: null }),
+  })
+
+  const pending = store.probe('probe-1', { url: 'https://www.youtube.com/watch?v=video-1' })
+  assert.equal(store.list()[0].state, 'running')
+  const unsubscribe = store.subscribe(() => undefined)
+  unsubscribe()
+  releaseProbe()
+
+  const result = await pending
+  assert.equal(result.ok, true)
+  assert.equal(store.list()[0].probeResult?.candidates[0].title, 'Video 1')
+  await store.dispose()
+})
+
+test('background job store caps probes at four and returns typed busy without admission', async () => {
+  const gate = deferred()
+  const started = []
+  const store = new DownloadJobStore({
+    probe: async (_request, signal) => {
+      started.push(true)
+      await gate.promise
+      return { ok: !signal.aborted, candidates: [], collections: [] }
+    },
+    start: async () => ({ operationId: 'unused', status: 'done', files: [], primaryFile: null, addedItemCount: 1 }),
+  })
+  const requests = Array.from({ length: 5 }, (_, index) => store.probe(`probe-cap-${index}`, {
+    url: `https://www.youtube.com/watch?v=probe-cap-${index}`,
+    useCookies: false,
+  }))
+  await waitFor(() => started.length === 4)
+  assert.deepEqual(await requests[4], { ok: false, candidates: [], collections: [], errorCode: 'busy' })
+  gate.resolve()
+  const results = await Promise.all(requests.slice(0, 4))
+  assert.equal(results.every((result) => result.ok), true)
+  assert.equal(store.list().some((operation) => operation.operationId === 'probe-cap-4'), false)
+  await store.dispose()
+})
+
+test('Douyin manifest delta counts items independently from generated files', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'promedia-manifest-delta-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const video = join(root, 'video.mp4')
+  const cover = join(root, 'cover.jpg')
+  const music = join(root, 'music.mp3')
+  const metadata = join(root, 'video.json')
+  await Promise.all([
+    writeFile(video, 'video', 'utf8'),
+    writeFile(cover, 'cover', 'utf8'),
+    writeFile(music, 'music', 'utf8'),
+    writeFile(metadata, '{}', 'utf8'),
+  ])
+  const manifest = join(root, 'download_manifest.jsonl')
+  const prefix = '{"aweme_id":"old","file_names":["old.mp4"]}\n'
+  const delta = JSON.stringify({
+    aweme_id: 'item-1',
+    file_names: ['video.mp4', 'cover.jpg', 'music.mp3', 'video.json'],
+  }) + '\n' + JSON.stringify({
+    aweme_id: 'item-1',
+    file_names: ['video.mp4', 'cover.jpg'],
+  }) + '\n'
+  await writeFile(manifest, prefix + delta, 'utf8')
+  const result = await readManifestDelta(manifest, Buffer.byteLength(prefix), root)
+  assert.equal(result.addedItemCount, 1)
+  assert.equal(result.files.length, 4)
+  assert.deepEqual(new Set(result.files), new Set([video, cover, music, metadata]))
+})
+
+test('channel history serializes cumulative item counts independently from sidecar files', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'promedia-channel-history-concurrent-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const history = new ChannelHistory(root)
+  await history.recordSuccess({
+    url: 'https://www.douyin.com/user/creator',
+    name: 'Creator',
     outputDir: 'C:\\Videos',
-    outputTemplate: '%(title)s.%(ext)s',
-    douyin: { mode: 'all', batchSize: 15, music: false, cover: true, metadata: true, folderPerVideo: false },
-  }), true)
-  assert.equal(isDownloadRequest({ operationId: '../bad', url: 'https://youtu.be/abc', kind: 'video' }), false)
+    lastMode: 'all',
+    addedItemCount: 3,
+  })
+  await Promise.all([
+    history.recordSuccess({
+      url: 'https://www.douyin.com/user/creator',
+      name: 'Creator batch',
+      outputDir: 'C:\\Videos',
+      lastMode: 'batch',
+      addedItemCount: 2,
+      files: ['video.mp4', 'cover.jpg', 'music.mp3', 'video.json'],
+    }),
+    history.recordSuccess({
+      url: 'https://www.douyin.com/user/creator',
+      name: 'Creator new',
+      outputDir: 'C:\\Videos',
+      lastMode: 'new',
+      addedItemCount: 1,
+      files: ['video.mp4', 'cover.jpg', 'music.mp3', 'video.json'],
+    }),
+  ])
+  const record = (await history.list())[0]
+  assert.equal(record.count, 6)
+  assert.equal(record.lastMode, 'new')
+  assert.equal(record.name, 'Creator new')
+})
+
+test('channel history ignores persisted records outside the HTTPS Douyin contract', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'promedia-channel-history-invalid-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await writeFile(join(root, 'download-channel-history.json'), JSON.stringify([
+    {
+      url: 'https://www.douyin.com/user/valid',
+      name: 'Valid creator',
+      lastRun: '2026-08-22T00:00:00.000Z',
+      count: 1,
+      outputDir: 'C:\\Videos',
+      lastMode: 'new',
+    },
+    {
+      url: 'http://www.douyin.com/user/insecure',
+      name: 'Insecure creator',
+      lastRun: '2026-08-22T00:00:00.000Z',
+      count: 1,
+      outputDir: 'C:\\Videos',
+      lastMode: 'new',
+    },
+    {
+      url: 'https://www.youtube.com/watch?v=not-douyin',
+      name: 'Wrong platform',
+      lastRun: '2026-08-22T00:00:00.000Z',
+      count: 1,
+      outputDir: 'C:\\Videos',
+      lastMode: 'new',
+    },
+    {
+      url: 'https://www.douyin.com/user/bad-date',
+      name: 'Bad date',
+      lastRun: 'not-a-date',
+      count: 1,
+      outputDir: 'C:\\Videos',
+      lastMode: 'new',
+    },
+    {
+      url: 'https://www.douyin.com/user/relative-path',
+      name: 'Relative path',
+      lastRun: '2026-08-22T00:00:00.000Z',
+      count: 1,
+      outputDir: 'relative/output',
+      lastMode: 'new',
+    },
+  ]), 'utf8')
+
+  assert.deepEqual(await new ChannelHistory(root).list(), [{
+    url: 'https://www.douyin.com/user/valid',
+    name: 'Valid creator',
+    lastRun: '2026-08-22T00:00:00.000Z',
+    count: 1,
+    outputDir: 'C:\\Videos',
+    lastMode: 'new',
+  }])
+})
+
+test('H.264 replacement keeps the source recoverable until the converted file is installed', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'promedia-codec-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const original = join(root, 'clip.mkv')
+  const converted = join(root, 'converted.mp4')
+  await writeFile(original, 'source', 'utf8')
+  await writeFile(converted, 'converted', 'utf8')
+  await replaceWithConvertedFile(original, converted)
+  assert.equal(await readFile(join(root, 'clip.mp4'), 'utf8'), 'converted')
+  const failedOriginal = join(root, 'failed.mkv')
+  await writeFile(failedOriginal, 'keep', 'utf8')
+  await assert.rejects(() => replaceWithConvertedFile(failedOriginal, join(root, 'missing.mp4')))
+  assert.equal(await readFile(failedOriginal, 'utf8'), 'keep')
+  assert.equal(await readFile(join(root, 'clip.mp4'), 'utf8'), 'converted')
+})
+
+test('H.264 replacement preserves a pre-existing target and rejects empty conversion output', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'promedia-codec-target-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const original = join(root, 'clip.mkv')
+  const target = join(root, 'clip.mp4')
+  const converted = join(root, 'converted.mp4')
+  await writeFile(original, 'source', 'utf8')
+  await writeFile(target, 'old-target', 'utf8')
+  await writeFile(converted, 'new-target', 'utf8')
+  await replaceWithConvertedFile(original, converted)
+  assert.equal(await readFile(target, 'utf8'), 'new-target')
+  await assert.rejects(() => replaceWithConvertedFile(target, join(root, 'missing.mp4')))
+  assert.equal(await readFile(target, 'utf8'), 'new-target')
+
+  const secondOriginal = join(root, 'second.mkv')
+  const secondTarget = join(root, 'second.mp4')
+  const emptyConverted = join(root, 'empty.mp4')
+  await writeFile(secondOriginal, 'second-source', 'utf8')
+  await writeFile(secondTarget, 'second-target', 'utf8')
+  await writeFile(emptyConverted, '', 'utf8')
+  await assert.rejects(() => replaceWithConvertedFile(secondOriginal, emptyConverted))
+  assert.equal(await readFile(secondOriginal, 'utf8'), 'second-source')
+  assert.equal(await readFile(secondTarget, 'utf8'), 'second-target')
+})
+
+test('H.264 replacement restores the pre-existing target when target backup fails', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'promedia-codec-rollback-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const original = join(root, 'clip.mkv')
+  const target = join(root, 'clip.mp4')
+  const converted = join(root, 'converted.mp4')
+  await writeFile(original, 'source', 'utf8')
+  await writeFile(target, 'old-target', 'utf8')
+  await writeFile(converted, 'converted', 'utf8')
+
+  const operations = {
+    rename: async (source, destination) => {
+      if (source === target) throw new Error('simulated target backup failure')
+      return realRename(source, destination)
+    },
+    rm,
+    stat: realStat,
+  }
+
+  await assert.rejects(
+    () => replaceWithConvertedFile(original, converted, operations),
+    /simulated target backup failure/,
+  )
+  assert.equal(await readFile(original, 'utf8'), 'source')
+  assert.equal(await readFile(target, 'utf8'), 'old-target')
+  await assert.rejects(() => readFile(converted, 'utf8'))
+  assert.deepEqual((await readdir(root)).filter((name) => name.endsWith('.bak')), [])
 })
 
 test('health check reaches a real HTTP server and validates its payload', async (t) => {
